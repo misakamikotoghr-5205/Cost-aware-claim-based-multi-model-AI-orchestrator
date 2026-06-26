@@ -1,0 +1,12 @@
+task_id: T003
+title: Generate product video storyboard
+type: video
+requires:
+  - visual_reasoning
+  - marketing_copy
+  - video_structure
+priority: high
+value_level: expensive_generation
+budget: medium
+risk: medium
+expected_output: shot-by-shot storyboard

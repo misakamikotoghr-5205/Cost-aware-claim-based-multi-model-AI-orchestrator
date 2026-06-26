@@ -1,0 +1,55 @@
+# routing_rules.yaml
+#
+# Task value levels + cost-aware policies + reroute/stop rules. The orchestrator
+# reads these to bound how much it is willing to spend per task value tier, and
+# how to react to failures.
+
+task_value_levels:
+  trivial:
+    examples: [格式整理, 简单翻译, 改标题, 生成文件名]
+    policy: use_cheapest_available
+  normal:
+    examples: [普通文案, 简单代码, 搜索总结, 普通问答]
+    policy: cheap_first_strong_verify_if_needed
+  important:
+    examples: [GitHub README, 产品方案, 可发布内容, 项目架构]
+    policy: mid_model_execute_strong_verify
+  critical:
+    examples: [核心代码, 商业方案, 投稿论文, 对外邮件, 法律/财务/医疗内容]
+    policy: strong_model_execute_cross_verify
+  expensive_generation:
+    examples: [视频生成, 高质量图片, 长上下文分析, 大规模代码重构]
+    policy: cheap_draft_then_upgrade
+
+# How many near-capability fallbacks to consider before crossing capability families.
+fallback:
+  max_candidates: 5
+  cross_family_only_after_same_family_exhausted: true
+
+reroute_rules:
+  - condition: same_error_count >= 2
+    action: switch_to_fallback
+  - condition: quality_score < 0.7
+    action: send_to_verifier_or_stronger_model
+  - condition: task_complexity_changed_to_high
+    action: escalate_to_stronger_model
+  - condition: quota_low == true
+    action: downgrade_or_reserve_model
+  - condition: expensive_generation_failed
+    action: return_to_prompt_or_storyboard_stage
+  - condition: no_quality_improvement_after_2_attempts
+    action: stop_and_request_human_decision
+
+stop_rules:
+  - condition: low_value_task_retry_count >= 1
+    action: stop
+  - condition: normal_task_retry_count >= 2
+    action: stop_or_ask_user
+  - condition: important_task_retry_count >= 3
+    action: escalate_once_then_stop
+  - condition: no_quality_improvement_after_2_rounds
+    action: stop
+  - condition: estimated_cost_exceeds_task_value
+    action: stop
+  - condition: expensive_model_required_but_quota_reserved
+    action: ask_or_defer

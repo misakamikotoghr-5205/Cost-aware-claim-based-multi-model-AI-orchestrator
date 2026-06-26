@@ -1,0 +1,53 @@
+# ── Secrets / credentials — NEVER commit ────────────────────────────────
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+auth.json
+credentials.json
+*secret*
+*token*
+*.credentials
+
+# ── Local run output / private records ──────────────────────────────────
+runs/
+pipeline_runs/
+*.run.json
+history.jsonl
+delivery_probe.txt
+
+# ── Python ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node ────────────────────────────────────────────────────────────────
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# ── Editor / OS ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# ── Generated media / large artifacts ───────────────────────────────────
+*.mp4
+*.mov
+*.pptx
+*.xlsx
+*.docx
+temp/
+tmp/
+*.log

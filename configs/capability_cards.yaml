@@ -1,0 +1,124 @@
+# capability_cards.yaml
+#
+# Static capability profile per model/agent. This is the "ground truth" the
+# scoring engine falls back on when live capability discovery (--discover) is
+# off. Capabilities are scored 0.0–1.0 per dimension. Update as models evolve,
+# or let the discovery layer (Grok + Gemini) refresh `dynamic_strength` at runtime.
+#
+# NOTE: these are opinionated starting values, not vendor benchmarks. Tune them.
+
+dimensions:
+  - code_generation
+  - code_architecture
+  - reasoning
+  - web_search
+  - long_context
+  - multimodal
+  - image_generation
+  - video_generation
+  - final_writing
+  - verification
+  - low_cost_drafting
+
+agents:
+  deepseek:
+    tier: cheap
+    capabilities:
+      code_generation: 0.70
+      code_architecture: 0.55
+      reasoning: 0.72
+      web_search: 0.30
+      long_context: 0.60
+      multimodal: 0.20
+      image_generation: 0.0
+      video_generation: 0.0
+      final_writing: 0.65
+      verification: 0.62
+      low_cost_drafting: 0.95
+    preferred_roles: [planner, assistant, low_risk_draft, summarizer]
+    avoid_roles: [final_publication_without_review, image, video]
+
+  grok:
+    tier: cheap
+    capabilities:
+      code_generation: 0.62
+      code_architecture: 0.55
+      reasoning: 0.74
+      web_search: 0.92
+      long_context: 0.60
+      multimodal: 0.70
+      image_generation: 0.65
+      video_generation: 0.70
+      final_writing: 0.66
+      verification: 0.55
+      low_cost_drafting: 0.80
+    preferred_roles: [researcher, trend_search, image_draft, video_draft]
+    avoid_roles: [final_fact_checking_without_cross_verification]
+
+  gemini:
+    tier: mid
+    capabilities:
+      code_generation: 0.74
+      code_architecture: 0.70
+      reasoning: 0.80
+      web_search: 0.88
+      long_context: 0.95
+      multimodal: 0.90
+      image_generation: 0.55
+      video_generation: 0.45
+      final_writing: 0.74
+      verification: 0.80
+      low_cost_drafting: 0.55
+    preferred_roles: [researcher, long_context_analysis, multimodal, verifier]
+    avoid_roles: [expensive_simple_tasks]
+
+  codex:
+    tier: mid
+    capabilities:
+      code_generation: 0.90
+      code_architecture: 0.78
+      reasoning: 0.82
+      web_search: 0.30
+      long_context: 0.70
+      multimodal: 0.30
+      image_generation: 0.0
+      video_generation: 0.0
+      final_writing: 0.70
+      verification: 0.78
+      low_cost_drafting: 0.55
+    preferred_roles: [primary, implement_feature, fix_bug, write_tests]
+    avoid_roles: [abstract_strategy_without_code, image, video]
+
+  claude_code:
+    tier: expensive
+    capabilities:
+      code_generation: 0.88
+      code_architecture: 0.94
+      reasoning: 0.90
+      web_search: 0.30
+      long_context: 0.90
+      multimodal: 0.40
+      image_generation: 0.0
+      video_generation: 0.0
+      final_writing: 0.85
+      verification: 0.88
+      low_cost_drafting: 0.30
+    preferred_roles: [complex_refactor, architecture_design, hard_debugging, verifier]
+    avoid_roles: [trivial_code_tasks, simple_formatting]
+
+  gpt:
+    tier: expensive
+    capabilities:
+      code_generation: 0.84
+      code_architecture: 0.82
+      reasoning: 0.90
+      web_search: 0.55
+      long_context: 0.80
+      multimodal: 0.78
+      image_generation: 0.70
+      video_generation: 0.40
+      final_writing: 0.92
+      verification: 0.90
+      low_cost_drafting: 0.40
+    preferred_roles: [final_review, public_facing_writing, quality_control, summarizer]
+    avoid_roles: [low_value_bulk_tasks]

@@ -1,0 +1,14 @@
+task_id: T020
+title: Refactor multi-file AI orchestration system
+type: code_generation
+requires:
+  - repository_editing
+  - architecture
+  - multi_file
+  - refactor
+  - error_handling
+priority: high
+value_level: critical
+budget: high
+risk: high
+expected_output: refactored modules with passing tests

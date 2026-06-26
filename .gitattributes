@@ -1,0 +1,6 @@
+# Normalize line endings; silence LF/CRLF warnings on Windows.
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

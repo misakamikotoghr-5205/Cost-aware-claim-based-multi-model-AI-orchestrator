@@ -1,0 +1,13 @@
+task_id: T006
+title: Build local routing CLI
+type: code_generation
+requires:
+  - repository_editing
+  - cli_design
+  - config_parsing
+  - error_handling
+priority: high
+value_level: important
+budget: medium
+risk: medium
+expected_output: runnable CLI prototype

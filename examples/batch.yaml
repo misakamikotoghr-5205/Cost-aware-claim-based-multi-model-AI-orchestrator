@@ -1,0 +1,9 @@
+# Run all example task cards through the planner at once.
+tasks:
+  - {task_id: T010, title: Fix a filename typo, type: general, value_level: trivial}
+  - {task_id: T002, title: Research best video models, type: research, value_level: normal,
+     requires: [web_search, source_verification, recency_check]}
+  - {task_id: T006, title: Build local routing CLI, type: code_generation, value_level: important,
+     requires: [repository_editing, cli_design, config_parsing, error_handling]}
+  - {task_id: T020, title: Refactor multi-file orchestrator, type: code_generation, value_level: critical,
+     requires: [repository_editing, architecture, multi_file, refactor]}

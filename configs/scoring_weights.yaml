@@ -1,0 +1,35 @@
+# scoring_weights.yaml
+#
+# Weights for FinalScore(agent, task). Positive terms reward fit/confidence/
+# track record/quota health/cost efficiency. Penalties punish waste and risk.
+# All scores are normalized 0..1 before weighting. See docs/scoring.md.
+
+scoring:
+  capability_fit: 0.25          # how well the agent's capability card matches task.requires
+  self_claim_confidence: 0.15   # the agent's own claim confidence
+  planner_recommendation: 0.15  # recommended_verifier / planner endorsements
+  peer_vote_score: 0.15         # weighted votes from other agents
+  historical_success: 0.10      # rolling success rate for this task type
+  quota_health: 0.10            # how much quota headroom this agent has
+  cost_efficiency: 0.10         # cheaper-for-equal-quality is rewarded
+
+penalties:
+  recent_failure: 0.20          # this agent failed a similar task recently
+  quota_scarcity: 0.25          # agent is near its minimum reserve
+  high_price_for_low_value_task: 0.20
+  hallucination_risk: 0.10
+  overkill_penalty: 0.15        # strong/expensive model on a trivial task
+
+# Vote weight = product of these per-voter factors (see voting_engine.py).
+vote_weight:
+  model_strength: 0.30
+  task_relevance: 0.25
+  historical_accuracy: 0.20
+  quota_health: 0.15
+  cost_awareness: 0.10
+
+# Thresholds used by the orchestrator.
+thresholds:
+  auto_execute_min_score: 0.55  # below this, escalate / re-plan
+  agreement_margin: 0.08        # initial-assignment vs top-claim within this ⇒ "agree"
+  quality_floor: 0.70           # below this in verification ⇒ reroute

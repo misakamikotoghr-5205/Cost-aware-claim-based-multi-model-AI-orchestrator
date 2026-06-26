@@ -1,0 +1,12 @@
+task_id: T002
+title: Research current strongest AI video generation models
+type: research
+requires:
+  - web_search
+  - source_verification
+  - recency_check
+priority: high
+value_level: normal
+budget: low
+risk: medium
+expected_output: ranked model list with evidence

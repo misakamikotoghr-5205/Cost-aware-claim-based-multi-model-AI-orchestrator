@@ -1,0 +1,19 @@
+# model_prices.yaml
+#
+# RELATIVE cost units only — NOT billing data, NOT your account info.
+# Used to compute cost_efficiency and the high-price-for-low-value penalty.
+# `unit_cost` is a coarse 0..1 relative price (1.0 = most expensive tier).
+# Update with public list prices; keep it relative so the logic is portable.
+
+prices:
+  deepseek:    {unit_cost: 0.05, kind: api,           notes: "cheapest reasoning/drafting"}
+  grok:        {unit_cost: 0.20, kind: subscription,  notes: "search + image/video drafts"}
+  gemini:      {unit_cost: 0.30, kind: api,           notes: "long context / multimodal"}
+  codex:       {unit_cost: 0.45, kind: subscription,  notes: "code implementation"}
+  gpt:         {unit_cost: 0.70, kind: subscription,  notes: "final quality / verification"}
+  claude_code: {unit_cost: 0.90, kind: subscription,  notes: "expensive; reserve for hard code"}
+
+# Coarse generation costs for expensive_generation tasks (relative units).
+generation_costs:
+  image: {grok: 0.15, gpt: 0.40, gemini: 0.25}
+  video: {grok: 0.50, gemini: 0.70}

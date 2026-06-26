@@ -1,0 +1,10 @@
+task_id: T011
+title: Generate product concept image
+type: image
+requires:
+  - visual_reasoning
+priority: normal
+value_level: expensive_generation
+budget: low
+risk: medium
+expected_output: concept image after a cheap draft pass

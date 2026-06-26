@@ -1,0 +1,42 @@
+# quota_policy.yaml
+#
+# Quota strategy per agent. `minimum_reserve` is the fraction of quota you want
+# to keep untouched for high-value tasks (drives the "quota_scarcity" penalty
+# and the Quota Shadow Price). `quota_status` here is a SAMPLE you would
+# normally feed at runtime (--quota-file) from your own meters; it ships as an
+# example only and contains no account data.
+
+policy:
+  deepseek:
+    use_aggressively_for: [planning, routing, low_cost_reasoning, draft, format_conversion]
+    reserve_for: []
+    minimum_reserve: 0.00
+  grok:
+    use_aggressively_for: [search, trend_research, image_draft, video_draft]
+    reserve_for: [high_value_video_generation, visual_idea_generation]
+    minimum_reserve: 0.10
+  gemini:
+    use_aggressively_for: [long_context, web_research, document_analysis, video_understanding]
+    reserve_for: [long_context_critical_tasks, multimodal_verification]
+    minimum_reserve: 0.20
+  codex:
+    use_aggressively_for: [code_generation, repository_editing, bug_fixing]
+    reserve_for: [important_code_tasks, project_implementation]
+    minimum_reserve: 0.20
+  claude_code:
+    use_aggressively_for: [architecture_review, complex_refactoring, hard_debugging]
+    reserve_for: [difficult_code_tasks, multi_file_reasoning]
+    minimum_reserve: 0.30
+  gpt:
+    use_aggressively_for: [final_review, synthesis, high_quality_writing, user_facing_output, image_fallback]
+    reserve_for: [critical_final_answers, public_release_materials]
+    minimum_reserve: 0.20
+
+# SAMPLE runtime state (override with --quota-file). remaining = 0.0..1.0.
+quota_status:
+  deepseek:    {remaining: 0.95}
+  grok:        {remaining: 0.60}
+  gemini:      {remaining: 0.80}
+  codex:       {remaining: 0.45}
+  claude_code: {remaining: 0.25}   # near its 0.30 reserve ⇒ scarcity penalty kicks in
+  gpt:         {remaining: 0.70}
