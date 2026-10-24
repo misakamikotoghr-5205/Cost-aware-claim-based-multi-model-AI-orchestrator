@@ -1,6 +1,7 @@
 """Quota invariants, crash recovery, concurrency, and credential-free import."""
 from concurrent.futures import ProcessPoolExecutor
 import json
+import sqlite3
 from pathlib import Path
 import sys
 import tempfile
@@ -13,9 +14,10 @@ from src.quota_sources import CCSwitchQuotaSource, load_normalized_quota
 
 
 def _reserve_process(args):
-    path, number = args
+    path, number, *extra = args
     try:
-        return QuotaLedger(path).reserve(f"request-{number}", "shared", 1)["state"]
+        return QuotaLedger(path).reserve(f"request-{number}", "shared", 1,
+                                        minimum_remaining=extra[0] if extra else 0)["state"]
     except InsufficientQuota:
         return "DENIED"
 
@@ -41,6 +43,34 @@ class QuotaLedgerTests(unittest.TestCase):
         self.assertEqual(results.count("RESERVED"), 10)
         self.assertEqual(results.count("DENIED"), 26)
         self.assertEqual(live.snapshot("shared")["available"], 0)
+
+    def test_atomic_minimum_remaining_floor_between_processes(self):
+        live = QuotaLedger(self.path)
+        live.set_quota("shared", 10)
+        with ProcessPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(_reserve_process, [(str(self.path), i, 2) for i in range(36)]))
+        self.assertEqual(results.count("RESERVED"), 8)
+        self.assertEqual(results.count("DENIED"), 28)
+        self.assertEqual(live.snapshot("shared")["available"], 2)
+
+    def test_minimum_floor_is_part_of_reservation_identity(self):
+        self.ledger.reserve("r", "a", 8, minimum_remaining=2)
+        self.assertTrue(self.ledger.reserve("r", "a", 8, minimum_remaining=2)["replayed"])
+        with self.assertRaises(ReservationConflict):
+            self.ledger.reserve("r", "a", 8, minimum_remaining=0)
+        with self.assertRaises(InsufficientQuota):
+            self.ledger.reserve("s", "a", 1, minimum_remaining=2)
+
+    def test_migrates_existing_database_without_losing_reservations(self):
+        # Simulate the old schema using the existing known reservation state.
+        self.ledger.reserve("old", "a", 3)
+        with sqlite3.connect(self.path) as conn:
+            conn.execute("ALTER TABLE quota_reservations DROP COLUMN minimum_remaining")
+        migrated = QuotaLedger(self.path, clock=lambda: self.now)
+        self.assertEqual(migrated.get_reservation("old")["minimum_remaining"], 0)
+        self.assertEqual(migrated.snapshot("a")["held"], 3)
+        migrated.reserve("new", "a", 5, minimum_remaining=2)
+        self.assertEqual(migrated.snapshot("a")["available"], 2)
 
     def test_settlement_once_releases_only_unused_amount(self):
         self.assertFalse(self.ledger.reserve("r", "a", 8)["replayed"])
@@ -68,15 +98,19 @@ class QuotaLedgerTests(unittest.TestCase):
         self.ledger.mark_unknown("r")
         restarted = QuotaLedger(self.path, clock=lambda: self.now)
         self.assertEqual(restarted.reserve("r", "a", 8)["state"], "UNKNOWN")
-        with self.assertRaises(InsufficientQuota):
+        with self.assertRaises(StaleQuota):
             restarted.reserve("retry", "a", 3)
         with self.assertRaises(ReservationConflict):
             restarted.release("r")
         self.now += 1
         restarted.set_quota("a", 10)
         self.assertEqual(restarted.snapshot("a")["available"], 2)
+        self.assertEqual(restarted.snapshot("a")["status"], "blocked")
+        with self.assertRaises(StaleQuota):
+            restarted.reserve("small-retry", "a", 1)
         restarted.settle("r", 5)
         self.assertEqual(restarted.snapshot("a")["remaining"], 5)
+        self.assertTrue(restarted.snapshot("a")["fresh"])
 
     def test_release_is_idempotent_but_id_is_never_reusable(self):
         self.ledger.reserve("r", "a", 8)

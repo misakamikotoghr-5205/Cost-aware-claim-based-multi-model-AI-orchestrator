@@ -30,8 +30,13 @@ compatible, enforceable maximum; otherwise defer execution or preserve UNKNOWN.
   observed_at=None, reset_at=None, max_age_seconds=300, source='manual')` imports
   a trusted observation. Times are UTC epoch seconds. Capacity is optional and in
   the same explicit unit. Units are immutable per pool and never converted.
-- `reserve(reservation_id, account, amount, *, model='*', unit=None)` atomically
-  checks freshness and remaining minus holds. Unknown pools, negative/nonfinite
+- `reserve(reservation_id, account, amount, *, model='*', unit=None,
+  minimum_remaining=0)` atomically checks freshness and
+  `remaining - held - amount >= minimum_remaining`. The floor is in the same
+  explicit pool unit, is persisted with the reservation, and is part of its
+  idempotency parameters. Routing must pass the effective subscription/strong
+  reserve floor to enforce policy across concurrent clients; a snapshot check
+  alone is insufficient. Unknown pools, negative/nonfinite
   values, stale/reset observations, and overspending fail closed. Amounts use
   decimal arithmetic with up to nine decimal places, not binary float sums.
 - A repeated ID with the same parameters returns the original state with
@@ -43,8 +48,10 @@ compatible, enforceable maximum; otherwise defer execution or preserve UNKNOWN.
 - `settle(id, actual_amount)` debits actual consumption once and frees the unused
   part. A different repeated amount is a conflict. The normal maximum is the
   reserved amount. An actual overrun records UNKNOWN, holds at least the reported
-  consumption, and freezes the pool (`blocked=True`, `fresh=False`) until explicit
-  reconciliation. Importing a newer balance does not remove that block.
+  consumption. Every UNKNOWN reservation freezes its pool (`blocked=True`,
+  `fresh=False`) until explicit reconciliation, since an uncertain execution may
+  have exceeded an estimated hold. Importing a newer balance does not remove
+  that block.
 - `release(id)` is only for cancellation before a side effect. UNKNOWN holds
   persist across restart, observation import, and reset time; they do not expire.
   An operator can reconcile verified consumption using `settle`, or verified no
@@ -52,8 +59,9 @@ compatible, enforceable maximum; otherwise defer execution or preserve UNKNOWN.
   as an automatic timeout/retry behavior. A known overrun needs provider-side
   investigation; a corrected verified amount within the reserved bound can be
   settled. Never claim unused without evidence.
-- `mark_unknown(id)` preserves the hold after a timeout, interrupted subprocess,
-  lost acknowledgment, or ambiguous tool response. Do not retry the external
+- `mark_unknown(id)` preserves the hold and blocks the entire pool after a
+  timeout, interrupted subprocess, lost acknowledgment, ambiguous tool response,
+  or unavailable trustworthy same-unit usage measurement. Do not retry the external
   effect. `get_reservation(id)` returns its durable state for reconciliation.
 - `snapshot(account, model='*')` returns account/model, unit, remaining, held,
   available, capacity, observed_at, reset_at, max_age_seconds, source, fresh,

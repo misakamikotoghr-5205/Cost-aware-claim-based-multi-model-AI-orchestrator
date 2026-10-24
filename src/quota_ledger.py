@@ -85,11 +85,18 @@ class QuotaLedger:
                     model TEXT NOT NULL, unit TEXT NOT NULL, amount TEXT NOT NULL,
                     state TEXT NOT NULL, actual_amount TEXT,
                     created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                    minimum_remaining TEXT NOT NULL DEFAULT '0',
                     FOREIGN KEY(account, model) REFERENCES quotas(account, model)
                 );
                 CREATE INDEX IF NOT EXISTS quota_reservation_pool
                     ON quota_reservations(account, model, state);
             """)
+        # Additive migration for databases created before atomic reserve floors.
+        # Serialize the check+ALTER so concurrent process startup cannot race.
+        with self._transaction() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(quota_reservations)")}
+            if "minimum_remaining" not in columns:
+                conn.execute("ALTER TABLE quota_reservations ADD COLUMN minimum_remaining TEXT NOT NULL DEFAULT '0'")
 
     @contextmanager
     def _connect(self):
@@ -127,7 +134,7 @@ class QuotaLedger:
     @staticmethod
     def _reservation_dict(row):
         result = dict(row)
-        for key in ("amount", "actual_amount"):
+        for key in ("amount", "actual_amount", "minimum_remaining"):
             if result[key] is not None:
                 result[key] = _number(result[key])
         return result
@@ -137,10 +144,12 @@ class QuotaLedger:
         result = dict(row)
         result.pop("observed_remaining")
         pending = conn.execute(
-            "SELECT amount,actual_amount FROM quota_reservations WHERE account=? AND model=? AND state IN ('RESERVED','UNKNOWN')",
+            "SELECT amount,actual_amount,state FROM quota_reservations WHERE account=? AND model=? AND state IN ('RESERVED','UNKNOWN')",
             (account, model)).fetchall()
         held = sum((max(Decimal(r[0]), Decimal(r[1] or 0)) for r in pending), Decimal(0))
-        blocked = any(r[1] is not None and Decimal(r[1]) > Decimal(r[0]) for r in pending)
+        # UNKNOWN has no trustworthy consumption bound. Hold accounting remains
+        # useful for reconciliation, but no other request may spend this pool.
+        blocked = any(r[2] == "UNKNOWN" for r in pending)
         remaining = Decimal(row["remaining"])
         now = self.clock()
         expired = row["reset_at"] is not None and now >= row["reset_at"]
@@ -198,31 +207,35 @@ class QuotaLedger:
                  reset_at, max_age_seconds, source))
             return self._snapshot(conn, account, model)
 
-    def reserve(self, reservation_id, account, amount, *, model="*", unit=None):
+    def reserve(self, reservation_id, account, amount, *, model="*", unit=None, minimum_remaining=0):
         reservation_id = _name(reservation_id, "reservation_id")
         account, model = _name(account, "account"), _name(model, "model")
         amount = _amount(amount, positive=True)
+        floor = _amount(minimum_remaining)
         with self._transaction() as conn:
             quota = self._quota(conn, account, model)
             if unit is not None and unit != quota["unit"]:
                 raise QuotaError("reservation unit does not match pool")
             old = conn.execute("SELECT * FROM quota_reservations WHERE reservation_id=?", (reservation_id,)).fetchone()
             if old:
-                if old["account"] != account or old["model"] != model or Decimal(old["amount"]) != amount:
+                if (old["account"] != account or old["model"] != model or Decimal(old["amount"]) != amount
+                        or Decimal(old["minimum_remaining"]) != floor):
                     raise ReservationConflict("reservation id already has different parameters")
                 # A replay returns its original state; it never authorizes execution again.
                 return dict(self._reservation_dict(old), replayed=True)
             snap = self._snapshot(conn, account, model)
             if not snap["fresh"]:
-                raise StaleQuota("quota is stale, reset, or blocked by an overrun; reconcile before execution")
+                raise StaleQuota("quota is stale, reset, or blocked by UNKNOWN consumption; reconcile before execution")
             held = sum((Decimal(r[0]) for r in conn.execute(
                 "SELECT amount FROM quota_reservations WHERE account=? AND model=? AND state IN ('RESERVED','UNKNOWN')",
                 (account, model))), Decimal(0))
-            if Decimal(quota["remaining"]) - held < amount:
-                raise InsufficientQuota("insufficient available quota")
+            if Decimal(quota["remaining"]) - held - amount < floor:
+                raise InsufficientQuota("insufficient available quota above the required minimum")
             now = self.clock()
-            conn.execute("INSERT INTO quota_reservations VALUES(?,?,?,?,?,'RESERVED',NULL,?,?)",
-                         (reservation_id, account, model, quota["unit"], str(amount), now, now))
+            conn.execute("""INSERT INTO quota_reservations(reservation_id,account,model,unit,amount,
+                         state,actual_amount,created_at,updated_at,minimum_remaining)
+                         VALUES(?,?,?,?,?,'RESERVED',NULL,?,?,?)""",
+                         (reservation_id, account, model, quota["unit"], str(amount), now, now, str(floor)))
             return dict(self._reservation_dict(self._reservation(conn, reservation_id)), replayed=False)
 
     def get_reservation(self, reservation_id):
