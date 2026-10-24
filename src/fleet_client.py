@@ -16,11 +16,11 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from .runtime_cli import CloudClient, Runtime, RuntimeError, read_json, write_json
+from .runtime_cli import CloudClient, Runtime, RuntimeError, read_json, write_json, _node_lock
 
 
 class FleetClient(CloudClient):
-    def create_pairing(self, *, label="", accounts=None, ttl_seconds=600):
+    def create_pairing(self, *, label="Local machine", accounts=None, ttl_seconds=600):
         body = {"label": label, "ttl_seconds": ttl_seconds}
         if accounts is not None:
             body["accounts"] = accounts
@@ -112,6 +112,13 @@ def resolve_node_payload(config, payload):
 
 
 def fleet_node_once(config, token):
+    """Only one process may own a paired node's claim journal at a time."""
+    directory = Path(config["receipt_dir"]).expanduser().resolve()
+    with _node_lock(directory / "node.lock"):
+        return _fleet_node_once(config, token)
+
+
+def _fleet_node_once(config, token):
     """Heartbeat, claim one task, execute locally, and acknowledge without replay.
 
     Callers own the worker lifecycle. A cloud outage never switches a native
