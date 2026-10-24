@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from src.fleet_client import FleetClient, advertised_capabilities, resolve_node_payload
+from src.runtime_cli import RuntimeError as NodeRuntimeError, _node_lock
 
 
 def node_config(tmp_path):
@@ -48,12 +49,24 @@ def test_alias_resolution_keeps_cloud_and_local_payloads_separate(tmp_path):
 @pytest.mark.parametrize("patch", [{"target": "node-b"}, {"client_id": "someone-else"},
                                     {"workspace_alias": "private"}, {"relative_dir": "../private"},
                                     {"relative_dir": "/etc"}, {"relative_dir": "C:\\private"},
+                                    {"relative_dir": "//server/share"}, {"relative_dir": ""},
                                     {"workdir": "/tmp"}])
 def test_node_rejects_wrong_identity_or_remote_path(tmp_path, patch):
     payload = task()
     payload.update(patch)
-    with pytest.raises(ValueError):
+    with pytest.raises(NodeRuntimeError):
         resolve_node_payload(node_config(tmp_path), payload)
+
+
+@pytest.mark.parametrize("missing", ["alias", "subdirectory"])
+def test_missing_local_workspace_is_a_clear_admission_refusal(tmp_path, missing):
+    config, payload = node_config(tmp_path), task()
+    if missing == "alias":
+        config["workspaces"]["documents"] = str(tmp_path / "absent-workspace")
+    else:
+        payload["relative_dir"] = "absent-subdirectory"
+    with pytest.raises(NodeRuntimeError, match="cannot be resolved locally"):
+        resolve_node_payload(config, payload)
 
 
 def test_alias_symlink_escape_is_rejected(tmp_path):
@@ -109,6 +122,46 @@ def test_same_node_cannot_process_two_claims_concurrently(tmp_path, monkeypatch)
         finish.set()
         worker.join(timeout=5)
     assert calls == ["first"]
+
+
+def test_node_lock_contends_between_real_processes_and_releases_handle(tmp_path):
+    """Exercises native msvcrt on Windows CI and native flock on POSIX."""
+    import subprocess
+    import sys
+    path = tmp_path / "node.lock"
+    script = """
+from pathlib import Path
+import sys
+from src.runtime_cli import _node_lock, RuntimeError
+try:
+    with _node_lock(Path(sys.argv[1])):
+        print('acquired')
+except RuntimeError:
+    print('refused')
+"""
+    def child():
+        result = subprocess.run([sys.executable, "-c", script, str(path)],
+                                cwd=Path(__file__).resolve().parents[1],
+                                capture_output=True, text=True, timeout=15, check=True)
+        return result.stdout.strip()
+    with _node_lock(path):
+        assert child() == "refused"
+    assert child() == "acquired"
+    # Windows cannot remove an open file: this also proves every path closed.
+    path.unlink()
+    assert not path.exists()
+
+
+def test_node_lock_initialization_error_is_normalized_and_releases_resources(tmp_path):
+    path = tmp_path / "node.lock"
+    path.mkdir()
+    with pytest.raises(NodeRuntimeError, match="lock is unavailable"):
+        with _node_lock(path):
+            pytest.fail("a directory cannot be a lock file")
+    path.rmdir()
+    with _node_lock(path):
+        pass
+    path.unlink()
 
 
 def test_real_cloud_pairs_two_nodes_executes_and_reconciles_lost_completion(tmp_path, monkeypatch):

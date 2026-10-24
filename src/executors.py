@@ -409,7 +409,7 @@ class MCPAdapter(_RestrictedAdapter):
         events, output = [], []
         deadline = time.monotonic() + request.timeout
         for call in calls:
-            remaining = deadline - time.monotonic()
+            remaining = min(request.timeout, deadline - time.monotonic())
             if remaining <= 0:
                 return ExecutionResult("unknown", output="\n".join(output), error="MCP execution deadline exceeded", events=events)
             events.append({"type": "tool_call", "name": call["name"]})
