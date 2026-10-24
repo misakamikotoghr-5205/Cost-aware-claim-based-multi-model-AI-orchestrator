@@ -1,5 +1,5 @@
 diff --git a/apps/desktop/electron/main.ts b/apps/desktop/electron/main.ts
-index 0eff77e4..a6fa99a1 100644
+index 0eff77e4..10152261 100644
 --- a/apps/desktop/electron/main.ts
 +++ b/apps/desktop/electron/main.ts
 @@ -133,6 +133,7 @@ import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
@@ -10,11 +10,14 @@ index 0eff77e4..a6fa99a1 100644
  import { composerImageTimestamp } from './composer-image-name'
  import { writeComposerPaste } from './composer-paste'
  import { applyConnectionChange, teardownSshState } from './connection-apply'
-@@ -17946,6 +17947,7 @@ app.whenReady().then(() => {
+@@ -17946,6 +17947,10 @@ app.whenReady().then(() => {
    // here and surfaced in Settings via the IPC state (never silent).
    applyQuickEntrySettings(readQuickEntrySettings())
    installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
-+  installRegionCapture({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
++  installRegionCapture({
++    rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
++    overlayPreloadPath: path.join(APP_ROOT, 'dist', 'region-capture-preload.js')
++  })
    installHudModifierTap({
      rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
      summon: () => {
@@ -23,16 +26,16 @@ index 7237b4c0..2aef8ce0 100644
 --- a/apps/desktop/electron/preload.ts
 +++ b/apps/desktop/electron/preload.ts
 @@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
- 
+
  import type { DesktopProfileRoute } from './desktop-profile'
  import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
 +import type { RegionCaptureApi } from './region-capture-types'
  import { customWindowControlsEnabled } from './window-controls'
- 
+
  // Which translucency the OS can back. Asked synchronously because the renderer
 @@ -26,6 +27,9 @@ const localSkin = ipcRenderer.sendSync('hermes:skin:local')
  import { unwrapExpectedNotFound } from './api-expected-404'
- 
+
  contextBridge.exposeInMainWorld('hermesDesktop', {
 +  regionCapture: {
 +    capture: () => ipcRenderer.invoke('hermes:region-capture:capture')
@@ -40,6 +43,32 @@ index 7237b4c0..2aef8ce0 100644
    glassSupported: translucencySupport?.glass === true,
    translucencySupported: translucencySupport?.translucency === true,
    // Launch-flag fact: the app was started with --local, so the renderer may
+diff --git a/apps/desktop/scripts/bundle-electron-main.mjs b/apps/desktop/scripts/bundle-electron-main.mjs
+index b6d7cd69..060947bf 100644
+--- a/apps/desktop/scripts/bundle-electron-main.mjs
++++ b/apps/desktop/scripts/bundle-electron-main.mjs
+@@ -29,7 +29,7 @@ function productIdentity(source, stamp) {
+
+ /** Every file bundleElectronMain writes: the only outputs that bake the install stamp. */
+ export const electronOutputs = Object.freeze({
+-  main: 'electron-main.mjs', preload: 'electron-preload.js', previewGuestPreload: 'preview-guest-preload.js',
++  main: 'electron-main.mjs', preload: 'electron-preload.js', previewGuestPreload: 'preview-guest-preload.js', regionCapturePreload: 'region-capture-preload.js',
+ })
+
+ /** Bundle main/preload using only the prepared workspace's compiler. */
+@@ -86,6 +86,12 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
+     format: 'cjs',
+     outfile: join(out, electronOutputs.previewGuestPreload),
+   })
++  await build({
++    ...common,
++    entryPoints: [join(source, 'apps/desktop/electron/region-capture-preload.ts')],
++    format: 'cjs',
++    outfile: join(out, electronOutputs.regionCapturePreload),
++  })
+   return { stampClock: bakedStamp }
+ }
+
 diff --git a/apps/desktop/src/global.d.ts b/apps/desktop/src/global.d.ts
 index f4a4ff20..29a467f6 100644
 --- a/apps/desktop/src/global.d.ts
@@ -63,10 +92,10 @@ index f4a4ff20..29a467f6 100644
        // cached gateway descriptor.
 diff --git a/apps/desktop/electron/region-capture-controller.test.ts b/apps/desktop/electron/region-capture-controller.test.ts
 new file mode 100644
-index 00000000..9ab8e6da
+index 00000000..9985e02b
 --- /dev/null
 +++ b/apps/desktop/electron/region-capture-controller.test.ts
-@@ -0,0 +1,109 @@
+@@ -0,0 +1,137 @@
 +import { describe, expect, it, vi } from 'vitest'
 +
 +import { createRegionCaptureController } from './region-capture-controller'
@@ -92,8 +121,8 @@ index 00000000..9ab8e6da
 +    const { capture, listSources, chooseSource, captureSource } = setup()
 +    expect(listSources).not.toHaveBeenCalled()
 +    const result = await capture.capture(7)
-+    expect(chooseSource).toHaveBeenCalledWith([{ id: 'screen:7:0', name: 'Screen 2' }], 7)
-+    expect(captureSource).toHaveBeenCalledExactlyOnceWith('screen:7:0')
++    expect(chooseSource).toHaveBeenCalledWith([{ id: 'screen:7:0', name: 'Screen 2' }], 7, expect.any(AbortSignal))
++    expect(captureSource).toHaveBeenCalledExactlyOnceWith('screen:7:0', 7)
 +    expect(result).toEqual({
 +      status: 'ok',
 +      imageDataUrl: 'data:image/png;base64,iVBORw==',
@@ -162,6 +191,34 @@ index 00000000..9ab8e6da
 +    expect(captureSource).toHaveBeenCalledTimes(1)
 +  })
 +
++  it('returns only the selected crop and never falls back to the full image after overlay cancellation', async () => {
++    const { listSources, chooseSource, captureSource, image } = setup()
++
++    const cropped = {
++      ...image,
++      getSize: () => ({ width: 100, height: 50 }),
++      toPNG: () => new Uint8Array([137, 80, 78, 71, 1])
++    }
++
++    const selectRegion = vi.fn(
++      async (): Promise<{ status: 'selected'; image: typeof cropped } | { status: 'cancelled' }> => ({
++        status: 'selected',
++        image: cropped
++      })
++    )
++
++    const capture = createRegionCaptureController({ listSources, chooseSource, captureSource, selectRegion })
++    expect(await capture.capture(7)).toMatchObject({
++      status: 'ok',
++      width: 100,
++      height: 50,
++      selectionMode: 'screen-region',
++      region_already_cropped: true
++    })
++    selectRegion.mockResolvedValueOnce({ status: 'cancelled' })
++    expect(await capture.capture(7)).toEqual({ status: 'cancelled' })
++  })
++
 +  it('rejects empty or unbounded images and reports permission denial without raw error text', async () => {
 +    const { capture, captureSource, image } = setup()
 +    captureSource.mockResolvedValueOnce({ ...image, isEmpty: () => true })
@@ -178,15 +235,16 @@ index 00000000..9ab8e6da
 +})
 diff --git a/apps/desktop/electron/region-capture-controller.ts b/apps/desktop/electron/region-capture-controller.ts
 new file mode 100644
-index 00000000..d8c2aac0
+index 00000000..15d94893
 --- /dev/null
 +++ b/apps/desktop/electron/region-capture-controller.ts
-@@ -0,0 +1,119 @@
+@@ -0,0 +1,162 @@
 +import type { RegionCaptureResult } from './region-capture-types'
 +
 +export interface RegionCaptureSource {
 +  id: string
 +  name: string
++  displayId?: string
 +}
 +
 +export interface RegionCaptureImage {
@@ -197,8 +255,14 @@ index 00000000..d8c2aac0
 +
 +interface RegionCaptureDependencies {
 +  listSources(): Promise<RegionCaptureSource[]>
-+  chooseSource(sources: RegionCaptureSource[], owner: number): Promise<string | null>
-+  captureSource(id: string): Promise<RegionCaptureImage | null>
++  chooseSource(sources: RegionCaptureSource[], owner: number, signal: AbortSignal): Promise<string | null>
++  captureSource(id: string, owner: number): Promise<RegionCaptureImage | null>
++  selectRegion?(
++    image: RegionCaptureImage,
++    source: RegionCaptureSource,
++    owner: number,
++    context: { isCurrent(): boolean; expiresAt: number; signal: AbortSignal }
++  ): Promise<{ status: 'selected'; image: RegionCaptureImage } | { status: 'preview' | 'cancelled' }>
 +  now?: () => number
 +  expiresAfterMs?: number
 +}
@@ -208,12 +272,13 @@ index 00000000..d8c2aac0
 +  const now = deps.now ?? Date.now
 +  const expiresAfterMs = deps.expiresAfterMs ?? 90_000
 +  let generation = 0
-+  let active: { owner: number; generation: number; expires: number } | null = null
++  let active: { owner: number; generation: number; expires: number; abort: AbortController } | null = null
 +  let busy = false
 +
 +  return {
 +    cancel(owner?: number) {
 +      if (active && (owner === undefined || active.owner === owner)) {
++        active.abort.abort()
 +        generation += 1
 +        active = null
 +      }
@@ -224,9 +289,12 @@ index 00000000..d8c2aac0
 +      }
 +
 +      busy = true
-+      const token = { owner, generation: ++generation, expires: now() + expiresAfterMs }
++      const token = { owner, generation: ++generation, expires: now() + expiresAfterMs, abort: new AbortController() }
++      const timer = setTimeout(() => token.abort.abort(), expiresAfterMs)
 +      active = token
-+      const current = () => active === token && generation === token.generation && now() < token.expires
++
++      const current = () =>
++        active === token && generation === token.generation && now() < token.expires && !token.abort.signal.aborted
 +
 +      try {
 +        const sources = await deps.listSources()
@@ -239,7 +307,7 @@ index 00000000..d8c2aac0
 +          return { status: 'unsupported', message: 'No selectable screen is available.' }
 +        }
 +
-+        const selected = await deps.chooseSource(sources, owner)
++        const selected = await deps.chooseSource(sources, owner, token.abort.signal)
 +
 +        if (!current() || selected === null) {
 +          return { status: 'cancelled' }
@@ -251,7 +319,7 @@ index 00000000..d8c2aac0
 +          return { status: 'cancelled', message: 'The selected screen is no longer available.' }
 +        }
 +
-+        const image = await deps.captureSource(source.id)
++        let image = await deps.captureSource(source.id, owner)
 +
 +        if (!current()) {
 +          return { status: 'cancelled' }
@@ -261,21 +329,50 @@ index 00000000..d8c2aac0
 +          return { status: 'unsupported', message: 'The selected screen could not be captured.' }
 +        }
 +
-+        const { width, height } = image.getSize()
++        const originalSize = image.getSize()
 +
 +        if (
-+          !Number.isSafeInteger(width) ||
-+          !Number.isSafeInteger(height) ||
-+          width < 1 ||
-+          height < 1 ||
-+          width * height > 16_777_216
++          !Number.isSafeInteger(originalSize.width) ||
++          !Number.isSafeInteger(originalSize.height) ||
++          originalSize.width < 1 ||
++          originalSize.height < 1 ||
++          originalSize.width * originalSize.height > 16_777_216
 +        ) {
 +          return { status: 'unsupported', message: 'The screen image exceeds the capture limit.' }
 +        }
 +
++        let isCropped = false
++
++        if (deps.selectRegion) {
++          const region = await deps.selectRegion(image, source, owner, {
++            isCurrent: current,
++            expiresAt: token.expires,
++            signal: token.abort.signal
++          })
++
++          if (!current() || region.status === 'cancelled') {
++            return { status: 'cancelled' }
++          }
++
++          if (region.status === 'selected') {
++            image = region.image
++            isCropped = true
++          }
++        }
++
++        const { width, height } = image.getSize()
 +        const bytes = image.toPNG()
 +
-+        if (bytes.byteLength === 0 || bytes.byteLength > 16 * 1024 * 1024) {
++        if (
++          image.isEmpty() ||
++          !Number.isSafeInteger(width) ||
++          !Number.isSafeInteger(height) ||
++          width < 1 ||
++          height < 1 ||
++          width * height > 16_777_216 ||
++          bytes.byteLength === 0 ||
++          bytes.byteLength > 16 * 1024 * 1024
++        ) {
 +          return { status: 'unsupported', message: 'The screen image exceeds the capture limit.' }
 +        }
 +
@@ -284,7 +381,8 @@ index 00000000..d8c2aac0
 +          imageDataUrl: `data:image/png;base64,${Buffer.from(bytes).toString('base64')}`,
 +          width,
 +          height,
-+          selectionMode: 'image-crop',
++          selectionMode: isCropped ? 'screen-region' : 'image-crop',
++          ...(isCropped ? { region_already_cropped: true } : {}),
 +          appContext: { sourceName: source.name, sourceId: source.id }
 +        }
 +      } catch {
@@ -292,6 +390,8 @@ index 00000000..d8c2aac0
 +          ? { status: 'denied', message: 'Screen capture was denied or is unavailable.' }
 +          : { status: 'cancelled' }
 +      } finally {
++        clearTimeout(timer)
++
 +        if (active === token) {
 +          active = null
 +        }
@@ -301,12 +401,543 @@ index 00000000..d8c2aac0
 +    }
 +  }
 +}
+diff --git a/apps/desktop/electron/region-capture-geometry.test.ts b/apps/desktop/electron/region-capture-geometry.test.ts
+new file mode 100644
+index 00000000..1c6490f1
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-geometry.test.ts
+@@ -0,0 +1,38 @@
++import { describe, expect, it } from 'vitest'
++
++import { mapRegionToBitmap } from './region-capture-geometry'
++
++describe('Native screen selection geometry', () => {
++  it('maps viewport DIPs to the actual bitmap instead of assuming display scale factor', () => {
++    expect(
++      mapRegionToBitmap(
++        { x: 100, y: 50, width: 200, height: 150 },
++        { width: 1500, height: 1000 },
++        { width: 3000, height: 2000 }
++      )
++    ).toEqual({ x: 200, y: 100, width: 400, height: 300 })
++    // The same local rectangle applies on a screen at global x=-1500.
++    expect(
++      mapRegionToBitmap(
++        { x: 0, y: 0, width: 1500, height: 1000 },
++        { width: 1500, height: 1000 },
++        { width: 4096, height: 2730 }
++      )
++    ).toEqual({ x: 0, y: 0, width: 4096, height: 2730 })
++  })
++
++  it('rejects invalid, empty, offscreen and non-finite selections rather than returning the full image', () => {
++    const viewport = { width: 1000, height: 800 }
++
++    for (const rect of [
++      null,
++      { x: -1, y: 0, width: 20, height: 20 },
++      { x: 0, y: 0, width: 0, height: 20 },
++      { x: 995, y: 0, width: 20, height: 20 },
++      { x: NaN, y: 0, width: 20, height: 20 },
++      { x: 0, y: Infinity, width: 20, height: 20 }
++    ]) {
++      expect(mapRegionToBitmap(rect, viewport, { width: 2000, height: 1600 })).toBeNull()
++    }
++  })
++})
+diff --git a/apps/desktop/electron/region-capture-geometry.ts b/apps/desktop/electron/region-capture-geometry.ts
+new file mode 100644
+index 00000000..04a5cf46
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-geometry.ts
+@@ -0,0 +1,50 @@
++export interface RegionRect {
++  x: number
++  y: number
++  width: number
++  height: number
++}
++
++/** Rectangles are viewport-local DIPs; negative monitor origins never enter this mapping. */
++export function mapRegionToBitmap(
++  rect: RegionRect,
++  viewport: { width: number; height: number },
++  image: { width: number; height: number }
++): RegionRect | null {
++  const values = [
++    rect?.x,
++    rect?.y,
++    rect?.width,
++    rect?.height,
++    viewport?.width,
++    viewport?.height,
++    image?.width,
++    image?.height
++  ]
++
++  if (values.some(value => typeof value !== 'number' || !Number.isFinite(value))) {
++    return null
++  }
++
++  if (
++    rect.x < 0 ||
++    rect.y < 0 ||
++    rect.width <= 0 ||
++    rect.height <= 0 ||
++    viewport.width <= 0 ||
++    viewport.height <= 0 ||
++    image.width <= 0 ||
++    image.height <= 0 ||
++    rect.x + rect.width > viewport.width ||
++    rect.y + rect.height > viewport.height
++  ) {
++    return null
++  }
++
++  const x = Math.floor((rect.x * image.width) / viewport.width)
++  const y = Math.floor((rect.y * image.height) / viewport.height)
++  const right = Math.min(image.width, Math.ceil(((rect.x + rect.width) * image.width) / viewport.width))
++  const bottom = Math.min(image.height, Math.ceil(((rect.y + rect.height) * image.height) / viewport.height))
++
++  return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null
++}
+diff --git a/apps/desktop/electron/region-capture-native-smoke.ts b/apps/desktop/electron/region-capture-native-smoke.ts
+new file mode 100644
+index 00000000..8d09cf8f
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-native-smoke.ts
+@@ -0,0 +1,162 @@
++/** Build with esbuild (electron external), then run under a real X11 display.
++ * Arguments: bundled region-capture-preload.js, optional synthetic proof PNG.
++ * This fixture never captures the user's normal display: use an isolated X server.
++ */
++import assert from 'node:assert/strict'
++import { writeFileSync } from 'node:fs'
++
++import { app, BrowserWindow, desktopCapturer, screen } from 'electron'
++
++import { selectNativeScreenRegion } from './region-capture-overlay'
++
++app.disableHardwareAcceleration()
++app.commandLine.appendSwitch('ozone-platform', 'x11')
++
++async function waitFor(check: () => boolean | Promise<boolean>) {
++  const deadline = Date.now() + 10000
++
++  while (Date.now() < deadline) {
++    if (await Promise.race([check(), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 500))])) {
++      return
++    }
++
++    await new Promise(resolve => setTimeout(resolve, 25))
++  }
++
++  throw new Error('Native overlay did not become ready')
++}
++
++async function main() {
++  const separator = process.argv.indexOf('--')
++  assert(separator >= 0, 'Pass -- followed by the preload path and optional proof PNG')
++  const args = process.argv.slice(separator + 1)
++  await app.whenReady()
++  const display = screen.getPrimaryDisplay()
++  const source = new BrowserWindow({ ...display.bounds, frame: false, webPreferences: { sandbox: true } })
++  await source.loadURL(
++    'data:text/html;charset=utf-8,' +
++      encodeURIComponent(
++        '<html><body style="background:Canvas;color:CanvasText;font:24px system-ui;padding:40px"><h1>Word document — isolated capture fixture</h1><p>Quarterly report. Select this paragraph directly on the screen.</p><table border="1" cellpadding="16"><tr><th>Region</th><th>Revenue</th></tr><tr><td>North</td><td>1200</td></tr><tr><td>South</td><td>1800</td></tr></table></body></html>'
++      )
++  )
++  await new Promise(resolve => setTimeout(resolve, 150))
++
++  const snapshots = await desktopCapturer.getSources({
++    types: ['screen'],
++    thumbnailSize: {
++      width: Math.ceil(display.bounds.width * display.scaleFactor),
++      height: Math.ceil(display.bounds.height * display.scaleFactor)
++    },
++    fetchWindowIcons: false
++  })
++
++  const image = snapshots.find(item => item.display_id === String(display.id))?.thumbnail
++  assert(image && !image.isEmpty(), 'Real X11 desktop capture is required')
++  assert.equal(await source.webContents.executeJavaScript('typeof window.regionSelection'), 'undefined')
++
++  let observedViewport = { width: 0, height: 0 }
++
++  const capture = async (mode: 'drag' | 'escape' | 'invalid' | 'abort' | 'expiry') => {
++    const abort = new AbortController()
++
++    const pending = selectNativeScreenRegion({
++      image,
++      bounds: display.bounds,
++      owner: source.webContents,
++      preloadPath: args[0],
++      context: {
++        isCurrent: () => !abort.signal.aborted,
++        expiresAt: Date.now() + (mode === 'expiry' ? 1500 : 30000),
++        signal: abort.signal
++      }
++    })
++
++    const overlay = BrowserWindow.getAllWindows().find(item => item !== source)!
++    overlay.webContents.on('preload-error', (_event, _path, error) => console.error('overlay preload:', error.message))
++
++    try {
++      await waitFor(
++        async () =>
++          !overlay.isDestroyed() &&
++          overlay.isVisible() &&
++          (await overlay.webContents.executeJavaScript('Boolean(document.getElementById("screen")?.naturalWidth)'))
++      )
++    } catch (error) {
++      console.error(
++        'overlay state',
++        overlay.isDestroyed()
++          ? 'destroyed'
++          : {
++              visible: overlay.isVisible(),
++              bounds: overlay.getBounds(),
++              page: await overlay.webContents.executeJavaScript(
++                'JSON.stringify({bridge:typeof window.regionSelection,state:document.readyState,image:document.getElementById("screen")?.naturalWidth,sourceLength:document.getElementById("screen")?.src.length})'
++              )
++            }
++      )
++      throw error
++    }
++
++    if (mode === 'drag') {
++      observedViewport = await overlay.webContents.executeJavaScript('({width:innerWidth,height:innerHeight})')
++      overlay.webContents.sendInputEvent({ type: 'mouseDown', x: 100, y: 100, button: 'left', clickCount: 1 })
++      overlay.webContents.sendInputEvent({ type: 'mouseMove', x: 400, y: 300, button: 'left' })
++      await new Promise(resolve => setTimeout(resolve, 50))
++
++      if (args[1]) {
++        writeFileSync(args[1], (await overlay.webContents.capturePage()).toPNG())
++      }
++
++      overlay.webContents.sendInputEvent({ type: 'mouseUp', x: 400, y: 300, button: 'left', clickCount: 1 })
++    } else if (mode === 'escape') {
++      overlay.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
++      overlay.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
++    } else if (mode === 'invalid') {
++      void overlay.webContents
++        .executeJavaScript(
++          'window.regionSelection.select({token:document.querySelector("script").nonce,rect:{x:-1,y:0,width:20,height:20},viewport:{width:innerWidth,height:innerHeight}})'
++        )
++        .catch(() => undefined)
++    } else if (mode === 'abort') {
++      abort.abort()
++    }
++
++    return await pending
++  }
++
++  const selected = await capture('drag')
++  assert.equal(selected.status, 'selected')
++
++  if (selected.status !== 'selected') {
++    throw new Error('Drag did not produce a crop')
++  }
++
++  const size = image.getSize()
++  assert.deepEqual(selected.image.getSize(), {
++    width:
++      Math.ceil((400 * size.width) / observedViewport.width) - Math.floor((100 * size.width) / observedViewport.width),
++    height:
++      Math.ceil((300 * size.height) / observedViewport.height) -
++      Math.floor((100 * size.height) / observedViewport.height)
++  })
++
++  for (const mode of ['escape', 'invalid', 'abort', 'expiry'] as const) {
++    assert.equal((await capture(mode)).status, 'cancelled')
++  }
++
++  source.destroy()
++  console.log(
++    JSON.stringify({
++      native: 'x11',
++      scaleFactor: display.scaleFactor,
++      cases: ['real-screen', 'pointer-drag-crop', 'escape', 'strict-invalid-crop', 'abort', 'expiry'],
++      result: 'passed'
++    })
++  )
++  app.exit(0)
++}
++
++void main().catch(error => {
++  console.error(error)
++  app.exit(1)
++})
+diff --git a/apps/desktop/electron/region-capture-overlay-page.ts b/apps/desktop/electron/region-capture-overlay-page.ts
+new file mode 100644
+index 00000000..5103dd05
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-overlay-page.ts
+@@ -0,0 +1,46 @@
++/** No remote content, application bridge or agent access lives in this one-purpose page. */
++export function regionCaptureOverlayPage(nonce: string): string {
++  return `<!doctype html><html><head><meta charset="utf-8">
++<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'none'; base-uri 'none'; form-action 'none'">
++<style>
++html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;cursor:crosshair;font:16px system-ui}
++img{position:fixed;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none;user-select:none}
++#selection{position:fixed;display:none;border:2px solid Highlight;box-sizing:border-box;background:color-mix(in srgb,Highlight 12%,transparent);pointer-events:none}
++#help{position:fixed;top:16px;left:50%;transform:translateX(-50%);padding:12px 16px;border-radius:8px;background:Canvas;color:CanvasText;cursor:default;user-select:none}
++button{margin-left:16px;font:inherit;cursor:pointer}
++</style></head><body><img id="screen" draggable="false"><div id="selection"></div><div id="help">Drag a region on the screen · Release to select · Esc to cancel<button id="cancel">Cancel</button></div>
++<script nonce="${nonce}">
++(() => {
++  const api = window.regionSelection;
++  let token = null, start = null, busy = false, loaded = false;
++  const box = document.getElementById('selection');
++  const cancel = () => { if(token && !busy) { busy=true; api.cancel(token); } };
++  const clamp = (value, limit) => Math.min(limit, Math.max(0, value));
++  function rectangle(event) {
++    const x=clamp(event.clientX,innerWidth),y=clamp(event.clientY,innerHeight);
++    return {x:Math.min(start.x,x),y:Math.min(start.y,y),width:Math.abs(x-start.x),height:Math.abs(y-start.y)};
++  }
++  document.getElementById('cancel').onclick=cancel;
++  addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();cancel();}});
++  addEventListener('pointerdown',event=>{
++    if(!token || !loaded || busy || event.button!==0 || event.target.closest('#help')) return;
++    event.preventDefault();start={x:clamp(event.clientX,innerWidth),y:clamp(event.clientY,innerHeight)};
++    document.body.setPointerCapture(event.pointerId);
++    box.style.display='block';
++  });
++  addEventListener('pointermove',event=>{
++    if(!start || busy) return;const rect=rectangle(event);
++    Object.assign(box.style,{left:rect.x+'px',top:rect.y+'px',width:rect.width+'px',height:rect.height+'px'});
++  });
++  addEventListener('pointerup',event=>{
++    if(!start || busy) return;const rect=rectangle(event);start=null;
++    if(rect.width<2 || rect.height<2){box.style.display='none';return;}
++    busy=true;api.select({token,rect,viewport:{width:innerWidth,height:innerHeight}});
++  });
++  addEventListener('pointercancel',()=>{start=null;box.style.display='none';});
++  api.read().then(data=>{
++    if(!data) return;token=data.token;const image=document.getElementById('screen');image.onload=()=>{loaded=true;};image.src=data.imageDataUrl;
++  });
++})();
++</script></body></html>`
++}
+diff --git a/apps/desktop/electron/region-capture-overlay.ts b/apps/desktop/electron/region-capture-overlay.ts
+new file mode 100644
+index 00000000..f5df4927
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-overlay.ts
+@@ -0,0 +1,191 @@
++import { randomUUID } from 'node:crypto'
++
++import { BrowserWindow, ipcMain } from 'electron'
++import type { IpcMainInvokeEvent, NativeImage, Rectangle, WebContents } from 'electron'
++
++import { mapRegionToBitmap } from './region-capture-geometry'
++import { regionCaptureOverlayPage } from './region-capture-overlay-page'
++
++interface RegionOverlayOptions {
++  image: NativeImage
++  bounds: Rectangle
++  owner: WebContents
++  preloadPath: string
++  context: { isCurrent(): boolean; expiresAt: number; signal: AbortSignal }
++}
++
++/** Exact-placement platforms only. An invalid crop never falls back to the full image. */
++export async function selectNativeScreenRegion({
++  image,
++  bounds,
++  owner,
++  preloadPath,
++  context
++}: RegionOverlayOptions): Promise<{ status: 'selected'; image: NativeImage } | { status: 'preview' | 'cancelled' }> {
++  if (!context.isCurrent() || context.signal.aborted || owner.isDestroyed()) {
++    return { status: 'cancelled' }
++  }
++
++  const bytes = image.toPNG()
++
++  if (bytes.length === 0 || bytes.length > 16 * 1024 * 1024) {
++    return { status: 'cancelled' }
++  }
++
++  const token = randomUUID()
++  const page = 'data:text/html;charset=utf-8,' + encodeURIComponent(regionCaptureOverlayPage(token))
++
++  const win = new BrowserWindow({
++    ...bounds,
++    frame: false,
++    transparent: true,
++    show: false,
++    resizable: false,
++    movable: false,
++    skipTaskbar: true,
++    alwaysOnTop: true,
++    minimizable: false,
++    maximizable: false,
++    fullscreenable: false,
++    backgroundColor: '#00000000',
++    hasShadow: false,
++    webPreferences: {
++      preload: preloadPath,
++      contextIsolation: true,
++      sandbox: true,
++      nodeIntegration: false,
++      devTools: false
++    }
++  })
++
++  const channels = ['read', 'select', 'cancel'].map(name => `hermes:region-capture:overlay:${name}`)
++
++  return await new Promise(resolve => {
++    let done = false
++    let read = false
++
++    const trusted = (event: IpcMainInvokeEvent) =>
++      !done &&
++      context.isCurrent() &&
++      !owner.isDestroyed() &&
++      event.sender === win.webContents &&
++      event.senderFrame === win.webContents.mainFrame &&
++      event.senderFrame.url === page
++
++    const finish = (result: { status: 'selected'; image: NativeImage } | { status: 'preview' | 'cancelled' }) => {
++      if (done) {
++        return
++      }
++
++      done = true
++      clearTimeout(timer)
++      context.signal.removeEventListener('abort', cancel)
++      owner.removeListener('destroyed', cancel)
++      channels.forEach(channel => ipcMain.removeHandler(channel))
++
++      if (!win.isDestroyed()) {
++        win.destroy()
++      }
++
++      resolve(result)
++    }
++
++    const cancel = () => finish({ status: 'cancelled' })
++    const timer = setTimeout(cancel, Math.max(0, context.expiresAt - Date.now()))
++
++    ipcMain.handle(channels[0], event => {
++      if (!trusted(event) || read) {
++        return null
++      }
++
++      read = true
++
++      return { token, imageDataUrl: `data:image/png;base64,${bytes.toString('base64')}` }
++    })
++    ipcMain.handle(channels[1], (event, payload) => {
++      if (!trusted(event) || payload?.token !== token || !read) {
++        return false
++      }
++
++      const content = win.getContentBounds()
++      const viewport = payload?.viewport
++
++      if (
++        !viewport ||
++        viewport.width !== content.width ||
++        viewport.height !== content.height ||
++        ['x', 'y', 'width', 'height'].some(key => Math.abs(content[key] - bounds[key]) > 1)
++      ) {
++        cancel()
++
++        return false
++      }
++
++      const rect = mapRegionToBitmap(payload?.rect, viewport, image.getSize())
++
++      if (!rect) {
++        cancel()
++
++        return false
++      }
++
++      try {
++        const cropped = image.crop(rect)
++
++        if (cropped.isEmpty()) {
++          cancel()
++        } else {
++          finish({ status: 'selected', image: cropped })
++        }
++      } catch {
++        cancel()
++      }
++
++      return true
++    })
++    ipcMain.handle(channels[2], (event, value) => {
++      if (!trusted(event) || value !== token) {
++        return false
++      }
++
++      cancel()
++
++      return true
++    })
++    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
++    win.webContents.on('will-navigate', event => {
++      event.preventDefault()
++      cancel()
++    })
++    win.webContents.once('render-process-gone', cancel)
++    win.once('closed', cancel)
++    context.signal.addEventListener('abort', cancel, { once: true })
++    owner.once('destroyed', cancel)
++    win.once('ready-to-show', () => {
++      if (!context.isCurrent()) {
++        cancel()
++
++        return
++      }
++
++      // Frameless X11/Windows windows may still have an invisible native frame.
++      // Align the content viewport, not the outer window, with the monitor.
++      win.setContentBounds(bounds)
++      const actual = win.getContentBounds()
++
++      // X11 can round an outer frame edge by one DIP. The crop below always
++      // uses the actual content viewport, so no display-scale guess is made.
++      if (['x', 'y', 'width', 'height'].some(key => Math.abs(actual[key] - bounds[key]) > 1)) {
++        finish({ status: 'preview' })
++
++        return
++      }
++
++      win.setAlwaysOnTop(true, 'screen-saver')
++      win.show()
++      win.focus()
++      win.once('blur', cancel)
++    })
++    void win.loadURL(page).catch(cancel)
++  })
++}
+diff --git a/apps/desktop/electron/region-capture-preload.ts b/apps/desktop/electron/region-capture-preload.ts
+new file mode 100644
+index 00000000..83951159
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-preload.ts
+@@ -0,0 +1,8 @@
++import { contextBridge, ipcRenderer } from 'electron'
++
++/** No filesystem, arbitrary IPC, app bridge or capture capability in the overlay. */
++contextBridge.exposeInMainWorld('regionSelection', {
++  read: () => ipcRenderer.invoke('hermes:region-capture:overlay:read'),
++  select: payload => ipcRenderer.invoke('hermes:region-capture:overlay:select', payload),
++  cancel: token => ipcRenderer.invoke('hermes:region-capture:overlay:cancel', token)
++})
 diff --git a/apps/desktop/electron/region-capture-types.ts b/apps/desktop/electron/region-capture-types.ts
 new file mode 100644
-index 00000000..efdd94f5
+index 00000000..fec1aa26
 --- /dev/null
 +++ b/apps/desktop/electron/region-capture-types.ts
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,24 @@
 +/** Device-local image acquisition; cropping and intent stay with the consumer. */
 +export interface RegionCaptureAppContext {
 +  sourceName?: string
@@ -321,8 +952,9 @@ index 00000000..efdd94f5
 +      imageDataUrl: string
 +      width: number
 +      height: number
-+      /** All platforms use a local preview crop, including native Wayland. */
-+      selectionMode: 'image-crop'
++      /** Wayland/compositors without exact placement use the local preview. */
++      selectionMode: 'image-crop' | 'screen-region'
++      region_already_cropped?: boolean
 +      appContext?: RegionCaptureAppContext
 +    }
 +  | { status: 'cancelled' | 'unsupported' | 'denied'; message?: string }
@@ -332,10 +964,10 @@ index 00000000..efdd94f5
 +}
 diff --git a/apps/desktop/electron/region-capture.test.ts b/apps/desktop/electron/region-capture.test.ts
 new file mode 100644
-index 00000000..9609b714
+index 00000000..9c5a4801
 --- /dev/null
 +++ b/apps/desktop/electron/region-capture.test.ts
-@@ -0,0 +1,126 @@
+@@ -0,0 +1,166 @@
 +import { EventEmitter } from 'node:events'
 +
 +import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -347,14 +979,19 @@ index 00000000..9609b714
 +  getSources: vi.fn(),
 +  showMessageBox: vi.fn(),
 +  fromWebContents: vi.fn(),
-+  getAllWindows: vi.fn()
++  getAllWindows: vi.fn(),
++  readContext: vi.fn(),
++  getDisplays: vi.fn()
 +}))
++
++vi.mock('./window-below', () => ({ readWindowBelow: native.readContext }))
 +
 +vi.mock('electron', () => ({
 +  app: { once: native.appOnce, removeListener: native.appRemove },
 +  BrowserWindow: { fromWebContents: native.fromWebContents, getAllWindows: native.getAllWindows },
 +  desktopCapturer: { getSources: native.getSources },
 +  dialog: { showMessageBox: native.showMessageBox },
++  screen: { getAllDisplays: native.getDisplays },
 +  ipcMain: {
 +    handle: (channel: string, handler: (...args: unknown[]) => Promise<unknown>) =>
 +      native.handlers.set(channel, handler),
@@ -378,9 +1015,19 @@ index 00000000..9609b714
 +    mainFrame: { url: 'file:///app/index.html?profile=work' }
 +  })
 +
-+  const win = { webContents: contents, isDestroyed: () => false }
++  const win = {
++    webContents: contents,
++    isDestroyed: () => false,
++    isVisible: () => false,
++    hide: vi.fn(),
++    showInactive: vi.fn(),
++    getBounds: () => ({ x: 0, y: 0, width: 2000, height: 1000 })
++  }
++
 +  native.fromWebContents.mockImplementation(sender => (sender === contents ? win : null))
 +  native.getAllWindows.mockReturnValue([win])
++  native.readContext.mockResolvedValue({ window: null, frontmost: null })
++  native.getDisplays.mockReturnValue([{ id: 7, bounds: { x: 0, y: 0, width: 2000, height: 1000 } }])
 +  native.getSources.mockImplementation(async options =>
 +    options.thumbnailSize.width === 0
 +      ? [{ id: 'screen:1:0', name: 'Screen 1' }]
@@ -461,23 +1108,80 @@ index 00000000..9609b714
 +    expect(await invoke(event)).toMatchObject({ status: 'unsupported' })
 +    dispose()
 +  })
++
++  it('samples real application context before the picker and ignores context on another monitor', async () => {
++    const { invoke, event, dispose } = setup()
++    native.readContext.mockResolvedValue({
++      window: { app: 'Microsoft Word', title: 'Report.docx', bounds: { x: 10, y: 10, width: 800, height: 600 } }
++    })
++    native.getSources.mockImplementation(async options =>
++      options.thumbnailSize.width === 0
++        ? [{ id: 'screen:1:0', name: 'Screen 1', display_id: '7' }]
++        : [{ id: 'screen:1:0', name: 'Screen 1', display_id: '7', thumbnail: image }]
++    )
++    expect(await invoke(event)).toMatchObject({
++      status: 'ok',
++      appContext: { appName: 'Microsoft Word', windowTitle: 'Report.docx' }
++    })
++    expect(native.readContext.mock.invocationCallOrder[0]).toBeLessThan(
++      native.showMessageBox.mock.invocationCallOrder[0]
++    )
++    native.readContext.mockResolvedValue({
++      window: { app: 'Microsoft Excel', title: 'Other monitor', bounds: { x: 3000, y: 10, width: 800, height: 600 } }
++    })
++    const result = (await invoke(event)) as { appContext: { appName?: string } }
++    expect(result.appContext.appName).toBeUndefined()
++    dispose()
++  })
 +})
 diff --git a/apps/desktop/electron/region-capture.ts b/apps/desktop/electron/region-capture.ts
 new file mode 100644
-index 00000000..b7d17b8f
+index 00000000..2e84d80c
 --- /dev/null
 +++ b/apps/desktop/electron/region-capture.ts
-@@ -0,0 +1,113 @@
-+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain } from 'electron'
+@@ -0,0 +1,234 @@
++import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen, systemPreferences } from 'electron'
 +import type { IpcMainInvokeEvent } from 'electron'
 +
++import { linuxOzoneBackend } from './hud-windowing'
 +import { createRegionCaptureController } from './region-capture-controller'
++import { selectNativeScreenRegion } from './region-capture-overlay'
 +import type { RegionCaptureResult } from './region-capture-types'
++import { readWindowBelow } from './window-below'
++
++async function snapshotAppContext(win: BrowserWindow) {
++  let timer: ReturnType<typeof setTimeout>
++
++  try {
++    const titles = process.platform !== 'darwin' || systemPreferences.getMediaAccessStatus('screen') === 'granted'
++
++    const result = await Promise.race([
++      readWindowBelow(process.pid, win.getBounds(), titles),
++      new Promise<null>(resolve => {
++        timer = setTimeout(() => resolve(null), 750)
++      })
++    ])
++
++    return result && 'window' in result ? result.window : null
++  } catch {
++    return null
++  } finally {
++    clearTimeout(timer)
++  }
++}
 +
 +/** Registers only an inert capability: no shortcut, UI, disk image or model call. */
-+export function installRegionCapture({ rendererUrl }: { rendererUrl: string }): () => void {
++export function installRegionCapture({
++  rendererUrl,
++  overlayPreloadPath
++}: {
++  rendererUrl: string
++  overlayPreloadPath?: string
++}): () => void {
 +  const expected = new URL(rendererUrl)
 +  const channel = 'hermes:region-capture:capture'
++  const hiddenOwners = new Set<number>()
++  const sourceDisplays = new Map<string, string>()
 +
 +  const controller = createRegionCaptureController({
 +    async listSources() {
@@ -489,9 +1193,20 @@ index 00000000..b7d17b8f
 +        fetchWindowIcons: false
 +      })
 +
-+      return sources.map(source => ({ id: source.id, name: source.name }))
++      sourceDisplays.clear()
++      sources.forEach(source => {
++        if (source.display_id) {
++          sourceDisplays.set(source.id, source.display_id)
++        }
++      })
++
++      return sources.map(source => ({
++        id: source.id,
++        name: source.name,
++        ...(source.display_id ? { displayId: source.display_id } : {})
++      }))
 +    },
-+    async chooseSource(sources, owner) {
++    async chooseSource(sources, owner, signal) {
 +      const win = BrowserWindow.getAllWindows().find(item => item.webContents.id === owner)
 +
 +      if (!win || win.isDestroyed()) {
@@ -506,12 +1221,22 @@ index 00000000..b7d17b8f
 +        buttons: ['Cancel', ...sources.map(source => source.name.replace(/\s+/g, ' ').slice(0, 120))],
 +        defaultId: 0,
 +        cancelId: 0,
-+        noLink: true
++        noLink: true,
++        signal
 +      })
 +
 +      return sources[result.response - 1]?.id ?? null
 +    },
-+    async captureSource(id) {
++    async captureSource(id, owner) {
++      const win = BrowserWindow.getAllWindows().find(item => item.webContents.id === owner)
++
++      if (win?.isVisible()) {
++        // Expose the document underneath the client before freezing the screen.
++        hiddenOwners.add(owner)
++        win.hide()
++        await new Promise(resolve => setTimeout(resolve, 120))
++      }
++
 +      const sources = await desktopCapturer.getSources({
 +        types: ['screen'],
 +        thumbnailSize: { width: 4096, height: 4096 },
@@ -520,7 +1245,35 @@ index 00000000..b7d17b8f
 +
 +      // A disappearing source never falls back to another screen. This also
 +      // respects a portal denial or changed source during the second request.
-+      return sources.find(source => source.id === id)?.thumbnail ?? null
++      const expectedDisplay = sourceDisplays.get(id)
++
++      return (
++        sources.find(source => source.id === id && (!expectedDisplay || source.display_id === expectedDisplay))
++          ?.thumbnail ?? null
++      )
++    },
++    async selectRegion(image, source, owner, context) {
++      const exactPlacement =
++        process.platform === 'win32' ||
++        (process.platform === 'linux' && linuxOzoneBackend(process.env, process.argv) === 'x11')
++
++      const display = source.displayId
++        ? screen.getAllDisplays().find(item => String(item.id) === source.displayId)
++        : null
++
++      const win = BrowserWindow.getAllWindows().find(item => item.webContents.id === owner)
++
++      if (!exactPlacement || !display || !overlayPreloadPath || !win || win.isDestroyed()) {
++        return { status: 'preview' }
++      }
++
++      return await selectNativeScreenRegion({
++        image: image as Electron.NativeImage,
++        bounds: display.bounds,
++        owner: win.webContents,
++        preloadPath: overlayPreloadPath,
++        context
++      })
 +    }
 +  })
 +
@@ -552,7 +1305,12 @@ index 00000000..b7d17b8f
 +    }
 +
 +    const owner = event.sender.id
-+    const cancel = () => controller.cancel(owner)
++    let invalidated = false
++
++    const cancel = () => {
++      invalidated = true
++      controller.cancel(owner)
++    }
 +
 +    const navigate = (_event: unknown, _url: string, _inPlace: boolean, isMainFrame: boolean) => {
 +      if (isMainFrame) {
@@ -564,8 +1322,43 @@ index 00000000..b7d17b8f
 +    event.sender.on('did-start-navigation', navigate)
 +
 +    try {
-+      return await controller.capture(owner)
++      // Sample before the source picker/overlay takes focus. The existing
++      // provider skips our own windows and never prompts for title access.
++      const appContext = await snapshotAppContext(win)
++
++      if (invalidated) {
++        return { status: 'cancelled' }
++      }
++
++      const result = await controller.capture(owner)
++      const displayId = result.status === 'ok' ? sourceDisplays.get(result.appContext?.sourceId) : null
++      const display = displayId ? screen.getAllDisplays().find(item => String(item.id) === displayId) : null
++      const target = appContext?.bounds
++
++      // A window sampled on another monitor must not label this screen's crop.
++      if (
++        result.status === 'ok' &&
++        display &&
++        target &&
++        appContext.app &&
++        target.x < display.bounds.x + display.bounds.width &&
++        display.bounds.x < target.x + target.width &&
++        target.y < display.bounds.y + display.bounds.height &&
++        display.bounds.y < target.y + target.height
++      ) {
++        result.appContext = {
++          ...result.appContext,
++          appName: appContext.app.replace(/\s+/g, ' ').slice(0, 128),
++          windowTitle: appContext.title.replace(/\s+/g, ' ').slice(0, 512)
++        }
++      }
++
++      return result
 +    } finally {
++      if (hiddenOwners.delete(owner) && !win.isDestroyed()) {
++        win.showInactive()
++      }
++
 +      event.sender.removeListener('destroyed', cancel)
 +      event.sender.removeListener('did-start-navigation', navigate)
 +    }
