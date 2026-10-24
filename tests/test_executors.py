@@ -237,6 +237,16 @@ def test_mcp_native_tool_result_and_shared_deadline(task):
     assert [e["type"] for e in result.events] == ["tool_call", "tool_result"]
 
 
+def test_mcp_timeout_does_not_exceed_budget_due_to_clock_rounding(task, monkeypatch):
+    # A coarse/rounded monotonic clock may produce 120.00000000000001 when
+    # subtracting the start from an absolute deadline. Never grant extra time.
+    monkeypatch.setattr(ex.time, "monotonic", lambda: 8.002)
+    client = Client()
+    result = mcp(task, client).execute(plan(task))
+    assert result.status == "succeeded"
+    assert 0 < client.calls[0][2] <= task.timeout
+
+
 @pytest.mark.parametrize("bad_call", [
     {"name": "read", "arguments": {"path": "../../escape"}},
     {"name": "shell", "arguments": {"command": "rm -rf /"}},
