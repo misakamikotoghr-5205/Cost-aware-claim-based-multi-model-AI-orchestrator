@@ -118,12 +118,58 @@ def prepare_checkout(*, spec, cache_dir, upstream=None, patch_dir=None):
     return checkout
 
 
-def build_native(checkout, *, skip_deps=False):
+def runtime_environment(hermes_home):
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(Path(hermes_home).expanduser().resolve())
+    # Windows setup otherwise defaults the tool store to the real OS home.
+    env["HERMES_RUNTIME_DIR"] = str(Path(env["HERMES_HOME"]) / "tools")
+    for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
+        env.pop(variable, None)
+    return env
+
+
+def runtime_setup_command(checkout, *, windows=None):
+    windows = os.name == "nt" if windows is None else windows
+    if windows:
+        powershell = shutil.which("pwsh") or shutil.which("powershell")
+        if powershell is None:
+            raise ExtensionError("PowerShell is required for the native Windows PM bootstrap")
+        return [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-File",
+                str(Path(checkout) / "setup-hermes.ps1"), "-RuntimeOnly"]
+    bash = shutil.which("bash")
+    if bash is None:
+        raise ExtensionError("bash is required for the official native PM bootstrap")
+    return [bash, str(Path(checkout) / "setup-hermes.sh"), "--runtime-only"]
+
+
+def prepare_runtime(checkout, hermes_home, *, skip_runtime=False):
+    env = runtime_environment(hermes_home)
+    if not skip_runtime:
+        # Official runtime-only avoids user PATH/shell edits, credentials and
+        # onboarding while publishing the checkout's own durable PM launchers.
+        run(runtime_setup_command(checkout), cwd=checkout, env=env, timeout=2400)
+    node = shutil.which("node")
+    if node is None:
+        raise ExtensionError("Node.js is required for the actual native backend readiness probe")
+    result = json.loads(run([node, str(ROOT / "scripts/probe_native_backend.mjs"),
+                             "--upstream", str(checkout), "--hermes-home", env["HERMES_HOME"]],
+                            cwd=checkout, env=env, timeout=180))
+    if result.get("ready") is not True or Path(result.get("root", "")).resolve() != Path(checkout).resolve():
+        raise ExtensionError("official native backend probe did not establish readiness")
+    return result
+
+
+def install_js_dependencies(checkout, *, skip_deps=False):
     npm = shutil.which("npm")
     if npm is None:
         raise ExtensionError("install a Node/npm version accepted by the pinned Hermes package.json")
     if not skip_deps:
         run([npm, "ci"], cwd=checkout, timeout=1200)
+    return npm
+
+
+def build_native(checkout, *, skip_deps=False):
+    npm = install_js_dependencies(checkout, skip_deps=skip_deps)
     run([npm, "--workspace", "apps/desktop", "run", "build"], cwd=checkout, timeout=1200)
 
 
@@ -135,26 +181,28 @@ def main(argv=None):
     parser.add_argument("--packages-dir", type=Path, default=ROOT / "dist/extensions")
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--skip-deps", action="store_true", help="use dependencies already installed at the upstream root")
+    parser.add_argument("--skip-runtime", action="store_true", help="skip PM bootstrap only for a preprepared source; still requires the real native launcher probe")
     parser.add_argument("--launch", action="store_true", help="launch the complete native app after preparation")
     args = parser.parse_args(argv)
     try:
         spec = json.loads((ROOT / "integrations/hermes-client/upstream.json").read_text())
         checkout = prepare_checkout(spec=spec, cache_dir=args.cache_dir, upstream=args.upstream,
                                     patch_dir=ROOT / "integrations/hermes-client/patches")
-        # esbuild comes from the upstream lock, never an npx download.
+        # SDK compilation and the real resolver probe both consume locked JS dependencies.
+        install_js_dependencies(checkout, skip_deps=args.skip_deps)
+        runtime = prepare_runtime(checkout, args.hermes_home, skip_runtime=args.skip_runtime)
         if args.build:
-            build_native(checkout, skip_deps=args.skip_deps)
+            build_native(checkout, skip_deps=True)
         core = build_one(spec["core_id"], output_dir=args.packages_dir, upstream=checkout)
         installed = ExtensionManager(args.hermes_home, hermes_commit=spec["commit"]).install(core["archive"], replace=True)
         print(json.dumps({"checkout": str(checkout), "core": installed,
-                          "optional_packages_installed": [], "native_built": args.build,
+                          "optional_packages_installed": [], "native_built": args.build, "native_runtime": runtime,
                           "next": "Launch native Capabilities > Plugins to enable orchestrator-core; install optional ZIPs individually."}, indent=2), flush=True)
         if args.launch:
             npm = shutil.which("npm")
             if npm is None:
                 raise ExtensionError("npm is not installed")
-            env = os.environ.copy()
-            env["HERMES_HOME"] = str(args.hermes_home.expanduser().resolve())
+            env = runtime_environment(args.hermes_home)
             env["HERMES_DESKTOP_HERMES_ROOT"] = str(checkout)
             subprocess.run([npm, "--workspace", "apps/desktop", "run", "start"], cwd=checkout, env=env, check=True)
         return 0

@@ -51,11 +51,20 @@ python scripts/prepare_native_client.py \
 
 The same Python commands work in PowerShell; use Windows paths. Choose a short
 cache path on Windows. The preparation script never resets an existing checkout.
-It uses the upstream `npm ci` and native workspace build, then launches the full
+It installs locked upstream Node dependencies and, by default, runs the official
+`setup-hermes.sh --runtime-only` (PowerShell `setup-hermes.ps1 -RuntimeOnly` on
+Windows) with the selected `HERMES_HOME` and its `tools/` store. This provisions
+the real PM Python/dependency environment and checkout-bound launcher without
+onboarding, model inference, credential copying, or user PATH/shell edits.
+Readiness is reported only after the **actual upstream**
+`resolveSourceInstallationBackend` and launcher installation-identity/version
+probes succeed. It then uses the native workspace build and launches the full
 native app with the selected `HERMES_HOME`. `--launch` runs the upstream `start`
 script, which builds before opening Electron. Without `--build`/`--launch`,
-preparation verifies the base and packages/installs core; upstream dependencies
-must already exist to compile its SDK entry.
+preparation still prepares and probes the runtime and packages/installs core; it
+does not open the GUI. `--skip-runtime` is only for an explicitly preprepared
+source and still requires the same real backend probe; it cannot manufacture a
+ready result. `--skip-deps` similarly reuses already installed Node dependencies.
 
 Only `orchestrator-core` is installed by preparation. Native Capabilities →
 Plugins controls activation; package installation itself does not enable or
