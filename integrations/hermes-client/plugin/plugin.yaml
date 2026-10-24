@@ -1,0 +1,5 @@
+name: orchestrator-core
+version: 0.1.0
+description: Native Hermes delegation scoring and optional private fleet controls. Model authentication stays with Hermes.
+author: Orchestrator contributors
+kind: backend
