@@ -1,13 +1,14 @@
 # Current delivery and roadmap
 
-## Delivered: unified single-client runtime
+## Delivered: native client, fleet and independently installable extensions
 
-- One Windows/Ubuntu desktop client for configuration, task input and receipts.
+- Complete pinned Hermes native desktop; native OAuth/API independent of cloud.
 - Original offline planner and scoring preserved.
 - Locally configured Hermes, DeepSeek Harness, Ollama and restricted MCP bridge.
-- Optional free-model evidence/cache extension; disabled by default.
-- Optional loopback Ollama judge; disabled by default and constrained by policy.
-- Authenticated cloud queue, task identity, leases, heartbeat and reconnect IDs.
+- Independent free-model discovery installation package with explicit online refresh.
+- Independent local-judge package, model setup and constrained local inference.
+- Independent smart-pointer package: region, keywords, suggested intents and draft review.
+- One cloud with multiple paired local nodes, owner/node isolation, capability routing, revocation and replay-safe reconnect.
 - Cloud-owned SQLite ledger with explicit quota units and atomic reservations.
 - Independent local verifier, durable receipts and conservative unknown outcomes.
 - Offline protocol demo and real subprocess/HTTP integration tests, with CI.
