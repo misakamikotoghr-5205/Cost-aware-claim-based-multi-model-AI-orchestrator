@@ -1,0 +1,669 @@
+diff --git a/apps/desktop/src/app/chat/composer/focus.ts b/apps/desktop/src/app/chat/composer/focus.ts
+index 3c7f5a20..a11108b4 100644
+--- a/apps/desktop/src/app/chat/composer/focus.ts
++++ b/apps/desktop/src/app/chat/composer/focus.ts
+@@ -54,6 +54,13 @@ interface InsertReplyDetail {
+ interface AttachImagesDetail {
+   blobs: Blob[]
+   target: ComposerTarget
++  /** SDK requests bind to one mounted surface and its session address. */
++  surfaceId?: string
++  ids?: string[]
++  owner?: { connectionId: string; profile: string }
++  token?: number
++  claimed?: boolean
++  isCurrent?: () => boolean
+ }
+ 
+ const FOCUS_EVENT = 'hermes:composer-focus'
+@@ -381,6 +388,90 @@ export const requestComposerAttachImages = (
+   }
+ }
+ 
++const IMAGE_ATTACH_TIMEOUT_MS = 30_000
++const imageAttachReplies = new Map<number, (ok: boolean) => void>()
++let imageAttachToken = 0
++
++/** A narrow image draft boundary. SVG and unbounded image payloads are excluded. */
++export const validComposerImages = (blobs: Blob[]): boolean =>
++  Array.isArray(blobs) &&
++  blobs.length > 0 &&
++  blobs.length <= 4 &&
++  blobs.every(
++    blob =>
++      blob instanceof Blob &&
++      blob.size > 0 &&
++      blob.size <= 8 * 1024 * 1024 &&
++      ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(blob.type)
++  ) &&
++  blobs.reduce((total, blob) => total + blob.size, 0) <= 16 * 1024 * 1024
++
++/** Return true only after native image ingestion succeeds for the exact draft.
++ * Captures synchronously, unlike paste-to-focus: no later active pane can claim it. */
++export const requestComposerAttachImagesAcked = (
++  blobs: Blob[],
++  {
++    target = 'active',
++    ids = [],
++    owner,
++    isCurrent = () => true
++  }: {
++    target?: ComposerTarget | 'active'
++    ids?: string[]
++    owner?: { connectionId: string; profile: string }
++    isCurrent?: () => boolean
++  } = {}
++): Promise<boolean> => {
++  if (typeof window === 'undefined' || !validComposerImages(blobs)) {
++    return Promise.resolve(false)
++  }
++
++  const resolvedTarget = resolve(target)
++  const surfaceId = getVisibleComposerSurfaceId(resolvedTarget)
++
++  if (!surfaceId || !isCurrent()) {
++    return Promise.resolve(false)
++  }
++
++  const token = ++imageAttachToken
++
++  return new Promise<boolean>(resolveReply => {
++    const timeout = window.setTimeout(() => ackComposerAttachImages(token, false), IMAGE_ATTACH_TIMEOUT_MS)
++    imageAttachReplies.set(token, ok => {
++      window.clearTimeout(timeout)
++      resolveReply(ok)
++    })
++
++    const detail: AttachImagesDetail = {
++      blobs: [...blobs],
++      target: resolvedTarget,
++      surfaceId,
++      ids: [...ids],
++      owner,
++      token,
++      isCurrent: () =>
++        imageAttachReplies.has(token) && isCurrent() && getVisibleComposerSurfaceId(resolvedTarget) === surfaceId
++    }
++
++    dispatchNow(ATTACH_IMAGES_EVENT, detail)
++
++    if (!detail.claimed) {
++      ackComposerAttachImages(token, false)
++    }
++  })
++}
++
++/** Async ingestion acknowledgement, never an acknowledgement of prompt submission. */
++export const ackComposerAttachImages = (token: number | undefined, ok: boolean) => {
++  if (token === undefined) {
++    return
++  }
++
++  const reply = imageAttachReplies.get(token)
++  imageAttachReplies.delete(token)
++  reply?.(ok === true)
++}
++
+ export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDetail) => void) =>
+   subscribe<AttachImagesDetail>(ATTACH_IMAGES_EVENT, handler)
+ 
+diff --git a/apps/desktop/src/app/chat/composer/index.tsx b/apps/desktop/src/app/chat/composer/index.tsx
+index aee9bf96..ea3cf72c 100644
+--- a/apps/desktop/src/app/chat/composer/index.tsx
++++ b/apps/desktop/src/app/chat/composer/index.tsx
+@@ -62,7 +62,7 @@ import { COMPOSER_AREAS } from './contrib'
+ import { ComposerControls } from './controls'
+ import { ComposerDirectiveActions } from './directive-actions'
+ import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
+-import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
++import { markActiveComposer } from './focus'
+ import { HelpHint } from './help-hint'
+ import { useAtCompletions } from './hooks/use-at-completions'
+ import { useCardWaitingSubmit } from './hooks/use-card-waiting-submit'
+@@ -70,6 +70,7 @@ import { useComposerBranch } from './hooks/use-composer-branch'
+ import { useComposerDraft } from './hooks/use-composer-draft'
+ import { useComposerDrop } from './hooks/use-composer-drop'
+ import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
++import { useComposerImageRequests } from './hooks/use-composer-image-requests'
+ import { useComposerMetrics } from './hooks/use-composer-metrics'
+ import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
+ import { useComposerPopout } from './hooks/use-composer-popout'
+@@ -300,6 +301,7 @@ export function ChatBar({
+   } = useComposerDraft({ activeQueueSessionKey, focusKey, inputDisabled, queueEditRef, sessionId })
+ 
+   useComposerScreenshot({ sessionKey: activeQueueSessionKey, focusKey, onAttachImageBlob })
++  useComposerImageRequests({ sessionId, sessionKey: activeQueueSessionKey, inputDisabled, profile, onAttachImageBlob })
+ 
+   // Undo/redo. The rich editor bypasses Chromium's editing pipeline for speed,
+   // which also bypasses its undo stack — so we own the stack and every edit
+@@ -309,27 +311,6 @@ export function ChatBar({
+     syncDraftFromEditor
+   })
+ 
+-  // Paste-to-focus: clipboard images from an unfocused ⌘V ride the bus (the
+-  // window dispatcher has no handle on this composer's attachment scope).
+-  // Same ingestion as a focused paste's image branch.
+-  useEffect(() => {
+-    if (!onAttachImageBlob) {
+-      return undefined
+-    }
+-
+-    return onComposerAttachImagesRequest(({ blobs, target }) => {
+-      if (target !== scope.target) {
+-        return
+-      }
+-
+-      triggerHaptic('selection')
+-
+-      for (const blob of blobs) {
+-        void onAttachImageBlob(blob)
+-      }
+-    })
+-  }, [onAttachImageBlob, scope.target])
+-
+   // Prior history belongs to the draft that just left — undoing into another
+   // conversation's text is worse than having none.
+   useEffect(() => {
+diff --git a/apps/desktop/src/sdk/composer.ts b/apps/desktop/src/sdk/composer.ts
+index 565db368..d3d31f4d 100644
+--- a/apps/desktop/src/sdk/composer.ts
++++ b/apps/desktop/src/sdk/composer.ts
+@@ -1,6 +1,8 @@
+ import {
+   type ComposerInsertMode,
+   type ComposerTarget,
++  getActiveComposer,
++  requestComposerAttachImagesAcked,
+   requestComposerFocus,
+   requestComposerGetDraft,
+   requestComposerInsertAcked,
+@@ -8,7 +10,16 @@ import {
+   requestComposerSubmit
+ } from '@/app/chat/composer/focus'
+ import { freshDraftScope, takeSessionDraft } from '@/store/composer'
+-import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
++import { $activeGatewayRoute } from '@/store/gateway'
++import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
++import {
++  $activeSessionId,
++  $connection,
++  $selectedStoredSessionId,
++  $sessions,
++  getSessionOwnerHints,
++  sessionMatchesStoredId
++} from '@/store/session'
+ import { $sessionStates } from '@/store/session-states'
+ 
+ /**
+@@ -63,6 +74,69 @@ const resolveComposerAddress = (
+  *  resolves to no live surface returns `null`/`false` (or is dropped, for
+  *  `focus`) — it never broadcasts and never throws. */
+ export const composerHost = {
++  /** Stage explicitly chosen images into one visible draft without sending it.
++   * Only PNG/JPEG/WebP/GIF, at most four images, 8 MiB each/16 MiB total.
++   * True means every image was ingested; false means refusal, failure, timeout,
++   * or a changed session/connection scope. Earlier successful images in a batch
++   * remain visible in the draft, so inspect it before retrying a partial batch. */
++  attachImages: (sessionId: null | string, blobs: Blob[]): Promise<boolean> => {
++    const address = resolveComposerAddress(sessionId)
++    const target = address.target === 'active' ? getActiveComposer() : address.target
++
++    const stored =
++      address.stored ||
++      (target === 'main' ? $selectedStoredSessionId.get() : target?.startsWith('tile:') ? target.slice(5) : '')
++
++    const ids = address.ids.length ? address.ids : stored ? [stored] : []
++    const hints = stored ? getSessionOwnerHints(stored) : []
++    const owners = new Map<string, { connectionId: string; profile: string }>()
++
++    for (const hint of hints) {
++      owners.set(JSON.stringify([hint.connectionId, normalizeProfileKey(hint.profile)]), {
++        connectionId: hint.connectionId,
++        profile: normalizeProfileKey(hint.profile)
++      })
++    }
++
++    for (const row of stored ? $sessions.get().filter(row => sessionMatchesStoredId(row, stored)) : []) {
++      if (row.connection_id) {
++        const owner = { connectionId: row.connection_id, profile: normalizeProfileKey(row.profile) }
++        owners.set(JSON.stringify([owner.connectionId, owner.profile]), owner)
++      }
++    }
++
++    const connection = $connection.get()
++
++    const fallback = {
++      connectionId: connection?.connectionId || (connection?.mode === 'local' ? 'local' : ''),
++      profile: normalizeProfileKey($activeGatewayProfile.get())
++    }
++
++    const owner = owners.size === 1 ? [...owners.values()][0] : owners.size === 0 && target === 'main' ? fallback : null
++
++    if (target === null || !owner?.connectionId) {
++      return Promise.resolve(false)
++    }
++
++    let current = true
++
++    const invalidate = () => {
++      current = false
++    }
++
++    const offRoute = $activeGatewayRoute.listen(invalidate)
++    const offConnection = $connection.listen(invalidate)
++    const offProfile = $activeGatewayProfile.listen(invalidate)
++    const offSession = target === 'main' ? $selectedStoredSessionId.listen(invalidate) : () => undefined
++
++    return requestComposerAttachImagesAcked(blobs, { target, ids, owner, isCurrent: () => current }).finally(() => {
++      current = false
++      offRoute()
++      offConnection()
++      offProfile()
++      offSession()
++    })
++  },
+   /** The live draft text of one composer, or null when nothing holds it.
+    *  Mounted surfaces answer with their in-DOM text (current, incl.
+    *  unsaved keystrokes); an unmounted session falls back to its debounced
+diff --git a/apps/desktop/src/app/chat/composer/hooks/use-composer-image-requests.ts b/apps/desktop/src/app/chat/composer/hooks/use-composer-image-requests.ts
+new file mode 100644
+index 00000000..c0ceddeb
+--- /dev/null
++++ b/apps/desktop/src/app/chat/composer/hooks/use-composer-image-requests.ts
+@@ -0,0 +1,123 @@
++import { useStore } from '@nanostores/react'
++import { useLayoutEffect } from 'react'
++
++import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
++import { freshDraftScope } from '@/store/composer'
++import { $activeGatewayRoute } from '@/store/gateway'
++import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
++import { $connection } from '@/store/session'
++
++import { ackComposerAttachImages, onComposerAttachImagesRequest } from '../focus'
++import { useComposerScope, useComposerSurfaceId } from '../scope'
++import type { ChatBarProps } from '../types'
++
++interface ImageRequestOptions {
++  sessionId?: string | null
++  sessionKey: string | null
++  inputDisabled: boolean
++  profile?: string | null
++  onAttachImageBlob: ChatBarProps['onAttachImageBlob']
++}
++
++/** The existing paste bus and SDK share one ingestion path, owned by this draft. */
++export function useComposerImageRequests({
++  sessionId,
++  sessionKey,
++  inputDisabled,
++  profile,
++  onAttachImageBlob
++}: ImageRequestOptions) {
++  const scope = useComposerScope()
++  const surfaceId = useComposerSurfaceId()
++  const visible = usePaneVisible()
++  const connection = useStore($connection)
++  const activeProfile = useStore($activeGatewayProfile)
++  const route = useStore($activeGatewayRoute)
++  const connectionId = scope.connectionId ?? connection?.connectionId ?? (connection?.mode === 'local' ? 'local' : '')
++  const ownerProfile = normalizeProfileKey(scope.profile ?? profile ?? activeProfile)
++
++  useLayoutEffect(() => {
++    if (!onAttachImageBlob) {
++      return
++    }
++
++    let mounted = true
++    let generation = 0
++
++    const offRoute = $activeGatewayRoute.listen(() => {
++      generation += 1
++    })
++
++    const offRequest = onComposerAttachImagesRequest(detail => {
++      if (detail.target !== scope.target) {
++        return
++      }
++
++      if (detail.token === undefined) {
++        for (const blob of detail.blobs) {
++          void onAttachImageBlob(blob)
++        }
++
++        return
++      }
++
++      const ids = [sessionId, sessionKey].filter((id): id is string => Boolean(id))
++
++      if (!ids.length) {
++        ids.push(freshDraftScope())
++      }
++
++      if (
++        generation !== 0 ||
++        detail.claimed ||
++        !visible ||
++        inputDisabled ||
++        detail.surfaceId !== surfaceId ||
++        (detail.owner && (detail.owner.connectionId !== connectionId || detail.owner.profile !== ownerProfile)) ||
++        (detail.ids?.length && !detail.ids.some(id => ids.includes(id))) ||
++        !detail.isCurrent?.()
++      ) {
++        return
++      }
++
++      detail.claimed = true
++      const capturedGeneration = generation
++      const isCurrent = () => mounted && generation === capturedGeneration && detail.isCurrent?.() === true
++
++      void (async () => {
++        let ok = false
++
++        try {
++          for (const blob of detail.blobs) {
++            if (!isCurrent() || (await onAttachImageBlob(blob, isCurrent)) !== true) {
++              return
++            }
++          }
++
++          ok = isCurrent()
++        } catch {
++          ok = false
++        } finally {
++          ackComposerAttachImages(detail.token, ok)
++        }
++      })()
++    })
++
++    return () => {
++      mounted = false
++      offRequest()
++      offRoute()
++    }
++  }, [
++    sessionId,
++    sessionKey,
++    inputDisabled,
++    onAttachImageBlob,
++    scope.target,
++    connectionId,
++    ownerProfile,
++    route,
++    surfaceId,
++    visible
++  ])
++}
+diff --git a/apps/desktop/src/app/chat/composer/hooks/use-composer-image-requests.test.tsx b/apps/desktop/src/app/chat/composer/hooks/use-composer-image-requests.test.tsx
+new file mode 100644
+index 00000000..81b054ec
+--- /dev/null
++++ b/apps/desktop/src/app/chat/composer/hooks/use-composer-image-requests.test.tsx
+@@ -0,0 +1,267 @@
++import { act, cleanup, renderHook } from '@testing-library/react'
++import type { PropsWithChildren } from 'react'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++
++import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
++import { composerHost } from '@/sdk/composer'
++import { createComposerAttachmentScope } from '@/store/composer'
++import { $activeGatewayRoute } from '@/store/gateway'
++import { $activeGatewayProfile } from '@/store/profile'
++import { $activeSessionId, $connection, $selectedStoredSessionId, $sessions } from '@/store/session'
++import { $sessionStates } from '@/store/session-states'
++
++import { markActiveComposer } from '../focus'
++import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
++import type { ChatBarProps } from '../types'
++
++import { useComposerImageRequests } from './use-composer-image-requests'
++
++const png = () => new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
++
++function mount(
++  attach: NonNullable<ChatBarProps['onAttachImageBlob']>,
++  {
++    target = 'main',
++    surface = 'surface-a',
++    session = 'a',
++    visible = true,
++    connectionId = 'local',
++    profile = 'default',
++    disabled = false
++  } = {}
++) {
++  const scope = { ...MAIN_COMPOSER_SCOPE, target, connectionId, profile, attachments: createComposerAttachmentScope() }
++
++  const Wrapper = ({ children }: PropsWithChildren) => (
++    <PaneVisibleContext value={visible}>
++      <ComposerScopeProvider value={scope}>
++        <ComposerSurfaceProvider value={surface}>
++          <div
++            data-composer-surface-id={surface}
++            data-composer-target={target}
++            data-pane-hidden={visible ? undefined : ''}
++          >
++            {children}
++          </div>
++        </ComposerSurfaceProvider>
++      </ComposerScopeProvider>
++    </PaneVisibleContext>
++  )
++
++  return renderHook(
++    ({ sessionKey }) =>
++      useComposerImageRequests({
++        sessionId: sessionKey,
++        sessionKey,
++        inputDisabled: disabled,
++        onAttachImageBlob: attach
++      }),
++    {
++      initialProps: { sessionKey: session },
++      wrapper: Wrapper
++    }
++  )
++}
++
++beforeEach(() => {
++  $connection.set({ connectionId: 'local', mode: 'local' } as never)
++  $activeGatewayProfile.set('default')
++  $activeGatewayRoute.set('default')
++  $selectedStoredSessionId.set('a')
++  $activeSessionId.set('runtime-a')
++  $sessionStates.set({ 'runtime-a': { storedSessionId: 'a' } } as never)
++  $sessions.set([
++    { id: 'a', connection_id: 'local', profile: 'default' },
++    { id: 'b', connection_id: 'local', profile: 'default' }
++  ] as never)
++  markActiveComposer('main')
++})
++
++afterEach(() => {
++  cleanup()
++  vi.useRealTimers()
++  $sessionStates.set({})
++  $selectedStoredSessionId.set(null)
++  $activeSessionId.set(null)
++  $sessions.set([])
++  $connection.set(null)
++  markActiveComposer('main')
++})
++
++describe('SDK image drafts use the mounted composer ingestion acknowledgement', () => {
++  it('waits for native image ingestion and stages only in the addressed composer without submitting', async () => {
++    let complete!: (ok: boolean) => void
++
++    const attachA = vi.fn(
++      (_blob: Blob) =>
++        new Promise<boolean>(resolve => {
++          complete = resolve
++        })
++    )
++
++    const attachB = vi.fn(async () => true)
++    mount(attachA)
++    mount(attachB, { target: 'tile:b', surface: 'surface-b', session: 'b' })
++    const submit = vi.fn()
++    window.addEventListener('hermes:composer-submit', submit)
++
++    try {
++      let settled = false
++
++      const result = composerHost.attachImages('runtime-a', [png()]).then(ok => {
++        settled = true
++
++        return ok
++      })
++
++      expect(attachA).toHaveBeenCalledOnce()
++      expect(attachB).not.toHaveBeenCalled()
++      await Promise.resolve()
++      expect(settled).toBe(false)
++      act(() => markActiveComposer('tile:b'))
++      await act(async () => complete(true))
++      expect(await result).toBe(true)
++      expect(submit).not.toHaveBeenCalled()
++      expect(attachA.mock.calls[0]![0]).toBeInstanceOf(Blob)
++    } finally {
++      window.removeEventListener('hermes:composer-submit', submit)
++    }
++  })
++
++  it.each([false, undefined, 'reject'])('does not report async ingestion failure as accepted (%s)', async outcome => {
++    const attach = vi.fn(async () => {
++      if (outcome === 'reject') {
++        throw new Error('native image save failed')
++      }
++
++      return outcome as boolean | undefined
++    })
++
++    mount(attach)
++    await expect(composerHost.attachImages('a', [png()])).resolves.toBe(false)
++  })
++
++  it('refuses absent, hidden and disabled surfaces before ingestion', async () => {
++    const attach = vi.fn(async () => true)
++    await expect(composerHost.attachImages('missing', [png()])).resolves.toBe(false)
++    const hidden = mount(attach, { visible: false })
++    await expect(composerHost.attachImages('a', [png()])).resolves.toBe(false)
++    hidden.unmount()
++    mount(attach, { disabled: true })
++    await expect(composerHost.attachImages('a', [png()])).resolves.toBe(false)
++    expect(attach).not.toHaveBeenCalled()
++  })
++
++  it('rejects a stale mounted session and same-named session on another connection/profile', async () => {
++    const attach = vi.fn(async () => true)
++    const stale = mount(attach, { session: 'b' })
++    await expect(composerHost.attachImages('a', [png()])).resolves.toBe(false)
++    stale.unmount()
++    mount(attach, { connectionId: 'remote', profile: 'different' })
++    await expect(composerHost.attachImages('a', [png()])).resolves.toBe(false)
++    expect(attach).not.toHaveBeenCalled()
++  })
++
++  it('refuses ambiguous session ownership instead of guessing one backend', async () => {
++    const attach = vi.fn(async () => true)
++    mount(attach)
++    $sessions.set([
++      { id: 'a', connection_id: 'local', profile: 'default' },
++      { id: 'a', connection_id: 'remote', profile: 'default' }
++    ] as never)
++    await expect(composerHost.attachImages('a', [png()])).resolves.toBe(false)
++    expect(attach).not.toHaveBeenCalled()
++  })
++
++  it.each(['session', 'connection', 'profile', 'owner-profile', 'selected-session', 'unmount'])(
++    'invalidates native save continuation across a %s round trip',
++    async change => {
++      let complete!: () => void
++      let guard!: () => boolean
++      const added: Blob[] = []
++
++      const attach = vi.fn((blob: Blob, isCurrent?: () => boolean) => {
++        guard = isCurrent!
++
++        return new Promise<boolean>(resolve => {
++          complete = () => {
++            if (isCurrent?.()) {
++              added.push(blob)
++            }
++
++            resolve(isCurrent?.() === true)
++          }
++        })
++      })
++
++      const hook = mount(attach)
++      const result = composerHost.attachImages('a', [png()])
++      expect(guard()).toBe(true)
++
++      if (change === 'session') {
++        hook.rerender({ sessionKey: 'b' })
++        hook.rerender({ sessionKey: 'a' })
++      } else if (change === 'connection') {
++        act(() => $connection.set({ connectionId: 'other', mode: 'remote' } as never))
++        act(() => $connection.set({ connectionId: 'local', mode: 'local' } as never))
++      } else if (change === 'profile') {
++        act(() => $activeGatewayRoute.set('other'))
++        act(() => $activeGatewayRoute.set('default'))
++      } else if (change === 'owner-profile') {
++        act(() => $activeGatewayProfile.set('other'))
++        act(() => $activeGatewayProfile.set('default'))
++      } else if (change === 'selected-session') {
++        act(() => $selectedStoredSessionId.set('b'))
++        act(() => $selectedStoredSessionId.set('a'))
++      } else {
++        hook.unmount()
++      }
++
++      expect(guard()).toBe(false)
++      await act(async () => complete())
++      expect(await result).toBe(false)
++      expect(added).toEqual([])
++    }
++  )
++
++  it('expires an unfinished native save and prevents its late continuation from adding a chip', async () => {
++    vi.useFakeTimers()
++    let complete!: () => void
++    let guard!: () => boolean
++
++    const attach = vi.fn(
++      (_blob: Blob, isCurrent?: () => boolean) =>
++        new Promise<boolean>(resolve => {
++          guard = isCurrent!
++          complete = () => resolve(isCurrent?.() === true)
++        })
++    )
++
++    mount(attach)
++    const result = composerHost.attachImages('a', [png()])
++    await act(async () => vi.advanceTimersByTimeAsync(30_000))
++    expect(await result).toBe(false)
++    expect(guard()).toBe(false)
++    await act(async () => complete())
++  })
++
++  it('enforces raster MIME, per-image/aggregate size and batch limits before ingestion', async () => {
++    const attach = vi.fn(async () => true)
++    mount(attach)
++    const max = new Blob([new Uint8Array(8 * 1024 * 1024)], { type: 'image/png' })
++
++    for (const blobs of [
++      [],
++      [new Blob([], { type: 'image/png' })],
++      [new Blob(['<svg/>'], { type: 'image/svg+xml' })],
++      [new Blob([new Uint8Array(8 * 1024 * 1024 + 1)], { type: 'image/png' })],
++      [max, max, max],
++      [png(), png(), png(), png(), png()]
++    ]) {
++      await expect(composerHost.attachImages('a', blobs)).resolves.toBe(false)
++    }
++
++    expect(attach).not.toHaveBeenCalled()
++    await expect(composerHost.attachImages('a', [max])).resolves.toBe(true)
++  })
++})

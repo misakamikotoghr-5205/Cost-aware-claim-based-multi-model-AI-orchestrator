@@ -87,6 +87,22 @@ def test_desktop_module_can_import_without_display():
     assert callable(src.desktop.main)
 
 
+def test_desktop_entry_launches_native_client_without_optional_installs(monkeypatch, tmp_path):
+    import subprocess
+    from src.desktop import main
+    seen = []
+    def run(argv, **options):
+        seen.append((argv, options))
+        return subprocess.CompletedProcess(argv, 0)
+    monkeypatch.setattr(subprocess, "run", run)
+    assert main(["--hermes-home", str(tmp_path), "--upstream", str(tmp_path / "source"), "--skip-deps"]) == 0
+    argv = seen[0][0]
+    assert argv[1].endswith("prepare_native_client.py")
+    assert "--launch" in argv and "--build" in argv
+    assert "--ids" not in argv and "all" not in argv
+    assert seen[0][1] == {"check": False}
+
+
 def test_basic_settings_preserve_advanced_parameters(tmp_path):
     from src.desktop import DesktopApp
     from types import SimpleNamespace

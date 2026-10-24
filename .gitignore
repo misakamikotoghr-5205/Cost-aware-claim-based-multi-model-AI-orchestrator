@@ -51,3 +51,5 @@ Thumbs.db
 temp/
 tmp/
 *.log
+# Generated native client extension packages
+/dist/

@@ -398,7 +398,7 @@ class DesktopApp:
         self.root.destroy()
 
 
-def main(argv=None):
+def legacy_main(argv=None):
     import argparse
     parser = argparse.ArgumentParser(description="AI Orchestrator desktop client")
     parser.add_argument("--config", type=Path)
@@ -414,6 +414,34 @@ def main(argv=None):
     except tk.TclError as exc:
         parser.exit(1, f"Desktop requires Python Tk and a graphical desktop session ({type(exc).__name__}).\nUbuntu: install python3-tk; Windows: enable Tcl/Tk in Python setup.\n")
     return 0
+
+
+def main(argv=None):
+    """Launch the complete native Hermes client; retain the old form explicitly."""
+    import argparse
+    import os
+    import subprocess
+    import sys
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if "--legacy" in arguments:
+        arguments.remove("--legacy")
+        return legacy_main(arguments)
+    parser = argparse.ArgumentParser(description="Native Hermes-based orchestrator desktop client")
+    parser.add_argument("--hermes-home", type=Path,
+                        default=Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))))
+    parser.add_argument("--upstream", type=Path, help="Use a checkout of the locked native client source")
+    parser.add_argument("--skip-deps", action="store_true", help="Use already installed upstream dependencies")
+    parser.add_argument("--prepare-only", action="store_true", help="Build the native client without opening a window")
+    args = parser.parse_args(arguments)
+    script = Path(__file__).resolve().parents[1] / "scripts" / "prepare_native_client.py"
+    command = [sys.executable, str(script), "--hermes-home", str(args.hermes_home), "--build"]
+    if args.upstream:
+        command.extend(["--upstream", str(args.upstream)])
+    if args.skip_deps:
+        command.append("--skip-deps")
+    if not args.prepare_only:
+        command.append("--launch")
+    return subprocess.run(command, check=False).returncode
 
 
 if __name__ == "__main__":
