@@ -150,6 +150,21 @@ class QuotaLedgerTests(unittest.TestCase):
         with self.assertRaises(StaleQuota):
             self.ledger.reserve("t", "a", 1)
 
+    def test_actor_invalidation_freezes_only_unfinished_matching_reservations(self):
+        self.ledger.set_quota("other", 10)
+        self.ledger.reserve("actor-a:pending", "a", 2)
+        self.ledger.reserve("actor-a:settled", "a", 1)
+        self.ledger.settle("actor-a:settled", 1)
+        self.ledger.reserve("actor-ab:pending", "other", 2)
+        assert self.ledger.invalidate_reservations("actor-a:") == {"invalidated": 1}
+        assert self.ledger.get_reservation("actor-a:pending")["state"] == "UNKNOWN"
+        assert self.ledger.get_reservation("actor-a:settled")["state"] == "SETTLED"
+        assert self.ledger.snapshot("a")["blocked"] is True
+        assert self.ledger.snapshot("other")["blocked"] is False
+        assert self.ledger.invalidate_reservations("actor-a:") == {"invalidated": 0}
+        self.ledger.settle("actor-a:settled", 1)
+        assert self.ledger.snapshot("a")["remaining"] == 9
+
     def test_stale_and_reset_observations_block_reservations(self):
         self.now += 301
         self.assertFalse(self.ledger.snapshot("a")["fresh"])
