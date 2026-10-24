@@ -54,6 +54,12 @@ def test_app_title_are_evidence_and_manual_override_wins():
     assert normalized["kind_source"] == "manual"
     assert normalized["evidence_only"] is True
     assert normalize_context(context(app="Excel", kind="unknown"))["derived_kind"] == "unknown"
+    native_window = normalize_context(context(app="", window_title="", sourceName="Sales.xlsx - Microsoft Excel"))
+    assert native_window["derived_kind"] == "spreadsheet"
+    assert native_window["kind_source"] == "sourceName"
+    native_screen = normalize_context(context(app="", window_title="", sourceName="Screen 1"))
+    assert native_screen["derived_kind"] == "unknown"
+    assert native_screen["evidence_only"] is True
 
 
 def test_unknown_app_uses_keywords_and_asks_when_uncertain():

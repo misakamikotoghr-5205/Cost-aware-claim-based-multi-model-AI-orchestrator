@@ -115,7 +115,7 @@ def normalize_context(context):
         derived, source = kind, "manual" if kind != "unknown" else "unknown"
     else:
         derived, source = "unknown", "unknown"
-        for field_name in ("app", "window_title"):
+        for field_name in ("app", "window_title", "sourceName"):
             text = result[field_name].casefold()
             sheet = any(term in text for term in ("excel", "spreadsheet", "libreoffice calc", ".xlsx", ".xls", ".csv"))
             doc = text in {"word", "word.exe", "writer", "writer.exe"} or any(term in text for term in ("winword", "microsoft word", "wps writer", "libreoffice writer", ".docx", ".doc"))
