@@ -64,8 +64,14 @@ class QuotaLedgerTests(unittest.TestCase):
     def test_migrates_existing_database_without_losing_reservations(self):
         # Simulate the old schema using the existing known reservation state.
         self.ledger.reserve("old", "a", 3)
-        with sqlite3.connect(self.path) as conn:
-            conn.execute("ALTER TABLE quota_reservations DROP COLUMN minimum_remaining")
+        # sqlite's context manager commits a transaction but does not close the
+        # connection. Close it explicitly before Windows removes the fixture.
+        conn = sqlite3.connect(self.path)
+        try:
+            with conn:
+                conn.execute("ALTER TABLE quota_reservations DROP COLUMN minimum_remaining")
+        finally:
+            conn.close()
         migrated = QuotaLedger(self.path, clock=lambda: self.now)
         self.assertEqual(migrated.get_reservation("old")["minimum_remaining"], 0)
         self.assertEqual(migrated.snapshot("a")["held"], 3)
