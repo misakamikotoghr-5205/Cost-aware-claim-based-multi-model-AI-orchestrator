@@ -116,6 +116,10 @@ It never downloads an `npx` compiler. Existing plain ESM `desktop/plugin.js` is
 also supported. Disk plugins must inline their CSS or use the native UI SDK;
 the host does not scan their source for Tailwind classes.
 
+Native YAML reads use Hermes' official `hermes_yaml` API when present. The
+standalone project falls back to its existing PyYAML dependency; a native
+installation does not need an undeclared PyYAML install.
+
 Core's generic Python modules are bundled as `_orchestrator/`; configs live at
 `configs/` so `Registry` keeps its relative config lookup. The installer is also
 copied to `package_manager.py` for the native plugin's install/remove/inventory
