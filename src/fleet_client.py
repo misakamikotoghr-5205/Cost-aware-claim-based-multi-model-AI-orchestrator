@@ -6,6 +6,7 @@ provider OAuth credentials or API keys. Node tokens authenticate transport only.
 from __future__ import annotations
 
 from copy import deepcopy
+import builtins
 import hashlib
 import json
 from pathlib import Path
@@ -93,11 +94,15 @@ def resolve_node_payload(config, payload):
     if not isinstance(alias, str) or alias not in configured:
         raise RuntimeError("Task workspace alias is not configured on this machine")
     relative = payload.get("relative_dir", ".")
-    if (not isinstance(relative, str) or "\\" in relative or ":" in relative
+    if (not isinstance(relative, str) or not relative or relative.startswith("/")
+            or "\\" in relative or ":" in relative or any(ord(char) < 32 for char in relative)
             or Path(relative).is_absolute() or ".." in relative.split("/")):
         raise RuntimeError("Task directory must be relative to its workspace alias")
-    root = Path(configured[alias]).expanduser().resolve(strict=True)
-    workdir = (root / relative).resolve(strict=True)
+    try:
+        root = Path(configured[alias]).expanduser().resolve(strict=True)
+        workdir = (root / relative).resolve(strict=True)
+    except (OSError, ValueError, TypeError, builtins.RuntimeError):
+        raise RuntimeError("Task workspace alias or relative directory cannot be resolved locally") from None
     if not root.is_dir() or not workdir.is_dir() or not workdir.is_relative_to(root):
         raise RuntimeError("Task directory escapes its configured workspace")
     mapped = deepcopy(payload)
