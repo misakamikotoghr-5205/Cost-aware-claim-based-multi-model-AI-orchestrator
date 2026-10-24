@@ -293,3 +293,16 @@ class QuotaLedger:
             conn.execute("UPDATE quota_reservations SET state='UNKNOWN',updated_at=? WHERE reservation_id=?",
                          (self.clock(), reservation_id))
             return self._reservation_dict(self._reservation(conn, reservation_id))
+
+    def invalidate_reservations(self, prefix):
+        """Freeze unfinished reservations for one authenticated actor namespace.
+
+        The server constructs an unambiguous prefix; callers must never accept
+        an arbitrary prefix from a node request. Terminal settlements stay intact.
+        """
+        prefix = _name(prefix, "prefix")
+        with self._transaction() as conn:
+            changed = conn.execute("""UPDATE quota_reservations SET state='UNKNOWN',updated_at=?
+                WHERE substr(reservation_id,1,?)=? AND state='RESERVED'""",
+                (self.clock(), len(prefix), prefix)).rowcount
+            return {"invalidated": changed}
