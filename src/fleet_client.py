@@ -20,7 +20,7 @@ from .runtime_cli import CloudClient, Runtime, RuntimeError, read_json, write_js
 
 
 class FleetClient(CloudClient):
-    def create_pairing(self, *, label="", accounts=None, ttl_seconds=600):
+    def create_pairing(self, *, label="Local machine", accounts=None, ttl_seconds=600):
         body = {"label": label, "ttl_seconds": ttl_seconds}
         if accounts is not None:
             body["accounts"] = accounts
