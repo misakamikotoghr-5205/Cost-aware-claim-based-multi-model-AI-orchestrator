@@ -1,0 +1,583 @@
+diff --git a/apps/desktop/electron/main.ts b/apps/desktop/electron/main.ts
+index 0eff77e4..a6fa99a1 100644
+--- a/apps/desktop/electron/main.ts
++++ b/apps/desktop/electron/main.ts
+@@ -133,6 +133,7 @@ import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
+ import { discoverWithTeamFallback } from './cloud-discovery'
+ import { createCloudSessionRecovery } from './cloud-session-recovery'
+ import { installCommandScreenshot } from './command-screenshot'
++import { installRegionCapture } from './region-capture'
+ import { composerImageTimestamp } from './composer-image-name'
+ import { writeComposerPaste } from './composer-paste'
+ import { applyConnectionChange, teardownSshState } from './connection-apply'
+@@ -17946,6 +17947,7 @@ app.whenReady().then(() => {
+   // here and surfaced in Settings via the IPC state (never silent).
+   applyQuickEntrySettings(readQuickEntrySettings())
+   installCommandScreenshot({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
++  installRegionCapture({ rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString() })
+   installHudModifierTap({
+     rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
+     summon: () => {
+diff --git a/apps/desktop/electron/preload.ts b/apps/desktop/electron/preload.ts
+index 7237b4c0..2aef8ce0 100644
+--- a/apps/desktop/electron/preload.ts
++++ b/apps/desktop/electron/preload.ts
+@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
+ 
+ import type { DesktopProfileRoute } from './desktop-profile'
+ import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
++import type { RegionCaptureApi } from './region-capture-types'
+ import { customWindowControlsEnabled } from './window-controls'
+ 
+ // Which translucency the OS can back. Asked synchronously because the renderer
+@@ -26,6 +27,9 @@ const localSkin = ipcRenderer.sendSync('hermes:skin:local')
+ import { unwrapExpectedNotFound } from './api-expected-404'
+ 
+ contextBridge.exposeInMainWorld('hermesDesktop', {
++  regionCapture: {
++    capture: () => ipcRenderer.invoke('hermes:region-capture:capture')
++  } satisfies RegionCaptureApi,
+   glassSupported: translucencySupport?.glass === true,
+   translucencySupported: translucencySupport?.translucency === true,
+   // Launch-flag fact: the app was started with --local, so the renderer may
+diff --git a/apps/desktop/src/global.d.ts b/apps/desktop/src/global.d.ts
+index f4a4ff20..29a467f6 100644
+--- a/apps/desktop/src/global.d.ts
++++ b/apps/desktop/src/global.d.ts
+@@ -8,6 +8,7 @@ import type { HudModifierApi } from '../electron/hud-modifier-types'
+ import type { MachineProfile } from '../electron/machine-profile'
+ import type { HermesNotification } from '../electron/notification-types'
+ import type { KeepAwakeMode } from '../electron/power-save'
++import type { RegionCaptureApi } from '../electron/region-capture-types'
+ import type { UpdateHoldWire } from '../electron/update-hold-types'
+ import type { UpdateRunReport } from '../electron/updater/update-metrics'
+ import type { WindowSizeMode } from '../electron/window-size-types'
+@@ -33,6 +34,8 @@ export type DesktopMachineProfile = MachineProfile
+ declare global {
+   interface Window {
+     hermesDesktop: {
++      /** Explicit native screen choice; pixels remain local until the consumer acts. */
++      regionCapture?: RegionCaptureApi
+       // Resolve a backend connection. Omit `profile` (or pass the primary) for
+       // the window's backend; pass a named profile to dial/reuse that profile's
+       // cached gateway descriptor.
+diff --git a/apps/desktop/electron/region-capture-controller.test.ts b/apps/desktop/electron/region-capture-controller.test.ts
+new file mode 100644
+index 00000000..9ab8e6da
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-controller.test.ts
+@@ -0,0 +1,109 @@
++import { describe, expect, it, vi } from 'vitest'
++
++import { createRegionCaptureController } from './region-capture-controller'
++
++function setup() {
++  const image = {
++    isEmpty: () => false,
++    getSize: () => ({ width: 3000, height: 2000 }),
++    toPNG: () => new Uint8Array([137, 80, 78, 71])
++  }
++
++  const listSources = vi.fn(async () => [{ id: 'screen:7:0', name: 'Screen 2' }])
++  const chooseSource = vi.fn(async () => 'screen:7:0' as string | null)
++  const captureSource = vi.fn(async () => image)
++  const clock = { now: 1000 }
++  const capture = createRegionCaptureController({ listSources, chooseSource, captureSource, now: () => clock.now })
++
++  return { capture, listSources, chooseSource, captureSource, clock, image }
++}
++
++describe('Local screen acquisition', () => {
++  it('does no work at registration and captures only the explicitly chosen source', async () => {
++    const { capture, listSources, chooseSource, captureSource } = setup()
++    expect(listSources).not.toHaveBeenCalled()
++    const result = await capture.capture(7)
++    expect(chooseSource).toHaveBeenCalledWith([{ id: 'screen:7:0', name: 'Screen 2' }], 7)
++    expect(captureSource).toHaveBeenCalledExactlyOnceWith('screen:7:0')
++    expect(result).toEqual({
++      status: 'ok',
++      imageDataUrl: 'data:image/png;base64,iVBORw==',
++      width: 3000,
++      height: 2000,
++      selectionMode: 'image-crop',
++      appContext: { sourceId: 'screen:7:0', sourceName: 'Screen 2' }
++    })
++  })
++
++  it('does not capture on cancellation or an invented source', async () => {
++    const { capture, chooseSource, captureSource } = setup()
++    chooseSource.mockResolvedValueOnce(null)
++    expect(await capture.capture(7)).toEqual({ status: 'cancelled' })
++    chooseSource.mockResolvedValueOnce('other-screen')
++    expect((await capture.capture(7)).status).toBe('cancelled')
++    expect(captureSource).not.toHaveBeenCalled()
++  })
++
++  it('binds cancellation to the owner and blocks concurrent capture requests', async () => {
++    const { capture, chooseSource, captureSource } = setup()
++    let finish!: (id: string) => void
++    chooseSource.mockImplementationOnce(
++      () =>
++        new Promise(resolve => {
++          finish = resolve
++        })
++    )
++    const pending = capture.capture(7)
++    await Promise.resolve()
++    expect((await capture.capture(8)).status).toBe('cancelled')
++    capture.cancel(8)
++    finish('screen:7:0')
++    expect((await pending).status).toBe('ok')
++    expect(captureSource).toHaveBeenCalledTimes(1)
++  })
++
++  it('drops late images after navigation, close or expiration', async () => {
++    for (const invalidation of ['cancel', 'expire'] as const) {
++      const { capture, captureSource, clock, image } = setup()
++      let finish!: (value: typeof image) => void
++      captureSource.mockImplementationOnce(
++        () =>
++          new Promise(resolve => {
++            finish = resolve
++          })
++      )
++      const pending = capture.capture(7)
++      await vi.waitFor(() => expect(captureSource).toHaveBeenCalled())
++
++      if (invalidation === 'cancel') {
++        capture.cancel(7)
++      } else {
++        clock.now += 90_000
++      }
++
++      finish(image)
++      expect(await pending).toEqual({ status: 'cancelled' })
++    }
++  })
++
++  it('never substitutes a different screen when the selected source vanishes', async () => {
++    const { capture, captureSource } = setup()
++    captureSource.mockResolvedValueOnce(null)
++    expect((await capture.capture(7)).status).toBe('unsupported')
++    expect(captureSource).toHaveBeenCalledTimes(1)
++  })
++
++  it('rejects empty or unbounded images and reports permission denial without raw error text', async () => {
++    const { capture, captureSource, image } = setup()
++    captureSource.mockResolvedValueOnce({ ...image, isEmpty: () => true })
++    expect((await capture.capture(7)).status).toBe('unsupported')
++    captureSource.mockResolvedValueOnce({ ...image, getSize: () => ({ width: 100000, height: 100000 }) })
++    expect((await capture.capture(7)).status).toBe('unsupported')
++    captureSource.mockResolvedValueOnce({ ...image, toPNG: () => new Uint8Array(0) })
++    expect((await capture.capture(7)).status).toBe('unsupported')
++    captureSource.mockRejectedValueOnce(new Error('private permission error and arbitrary credentials'))
++    const result = await capture.capture(7)
++    expect(result.status).toBe('denied')
++    expect(JSON.stringify(result)).not.toContain('credentials')
++  })
++})
+diff --git a/apps/desktop/electron/region-capture-controller.ts b/apps/desktop/electron/region-capture-controller.ts
+new file mode 100644
+index 00000000..d8c2aac0
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-controller.ts
+@@ -0,0 +1,119 @@
++import type { RegionCaptureResult } from './region-capture-types'
++
++export interface RegionCaptureSource {
++  id: string
++  name: string
++}
++
++export interface RegionCaptureImage {
++  isEmpty(): boolean
++  getSize(): { width: number; height: number }
++  toPNG(): Uint8Array
++}
++
++interface RegionCaptureDependencies {
++  listSources(): Promise<RegionCaptureSource[]>
++  chooseSource(sources: RegionCaptureSource[], owner: number): Promise<string | null>
++  captureSource(id: string): Promise<RegionCaptureImage | null>
++  now?: () => number
++  expiresAfterMs?: number
++}
++
++/** One owner, one modal consent and one image. No autonomous capture loop. */
++export function createRegionCaptureController(deps: RegionCaptureDependencies) {
++  const now = deps.now ?? Date.now
++  const expiresAfterMs = deps.expiresAfterMs ?? 90_000
++  let generation = 0
++  let active: { owner: number; generation: number; expires: number } | null = null
++  let busy = false
++
++  return {
++    cancel(owner?: number) {
++      if (active && (owner === undefined || active.owner === owner)) {
++        generation += 1
++        active = null
++      }
++    },
++    async capture(owner: number): Promise<RegionCaptureResult> {
++      if (busy) {
++        return { status: 'cancelled', message: 'A screen selection is already open.' }
++      }
++
++      busy = true
++      const token = { owner, generation: ++generation, expires: now() + expiresAfterMs }
++      active = token
++      const current = () => active === token && generation === token.generation && now() < token.expires
++
++      try {
++        const sources = await deps.listSources()
++
++        if (!current()) {
++          return { status: 'cancelled' }
++        }
++
++        if (sources.length === 0 || sources.length > 16) {
++          return { status: 'unsupported', message: 'No selectable screen is available.' }
++        }
++
++        const selected = await deps.chooseSource(sources, owner)
++
++        if (!current() || selected === null) {
++          return { status: 'cancelled' }
++        }
++
++        const source = sources.find(item => item.id === selected)
++
++        if (!source) {
++          return { status: 'cancelled', message: 'The selected screen is no longer available.' }
++        }
++
++        const image = await deps.captureSource(source.id)
++
++        if (!current()) {
++          return { status: 'cancelled' }
++        }
++
++        if (!image || image.isEmpty()) {
++          return { status: 'unsupported', message: 'The selected screen could not be captured.' }
++        }
++
++        const { width, height } = image.getSize()
++
++        if (
++          !Number.isSafeInteger(width) ||
++          !Number.isSafeInteger(height) ||
++          width < 1 ||
++          height < 1 ||
++          width * height > 16_777_216
++        ) {
++          return { status: 'unsupported', message: 'The screen image exceeds the capture limit.' }
++        }
++
++        const bytes = image.toPNG()
++
++        if (bytes.byteLength === 0 || bytes.byteLength > 16 * 1024 * 1024) {
++          return { status: 'unsupported', message: 'The screen image exceeds the capture limit.' }
++        }
++
++        return {
++          status: 'ok',
++          imageDataUrl: `data:image/png;base64,${Buffer.from(bytes).toString('base64')}`,
++          width,
++          height,
++          selectionMode: 'image-crop',
++          appContext: { sourceName: source.name, sourceId: source.id }
++        }
++      } catch {
++        return current()
++          ? { status: 'denied', message: 'Screen capture was denied or is unavailable.' }
++          : { status: 'cancelled' }
++      } finally {
++        if (active === token) {
++          active = null
++        }
++
++        busy = false
++      }
++    }
++  }
++}
+diff --git a/apps/desktop/electron/region-capture-types.ts b/apps/desktop/electron/region-capture-types.ts
+new file mode 100644
+index 00000000..efdd94f5
+--- /dev/null
++++ b/apps/desktop/electron/region-capture-types.ts
+@@ -0,0 +1,23 @@
++/** Device-local image acquisition; cropping and intent stay with the consumer. */
++export interface RegionCaptureAppContext {
++  sourceName?: string
++  sourceId?: string
++  appName?: string
++  windowTitle?: string
++}
++
++export type RegionCaptureResult =
++  | {
++      status: 'ok'
++      imageDataUrl: string
++      width: number
++      height: number
++      /** All platforms use a local preview crop, including native Wayland. */
++      selectionMode: 'image-crop'
++      appContext?: RegionCaptureAppContext
++    }
++  | { status: 'cancelled' | 'unsupported' | 'denied'; message?: string }
++
++export interface RegionCaptureApi {
++  capture(): Promise<RegionCaptureResult>
++}
+diff --git a/apps/desktop/electron/region-capture.test.ts b/apps/desktop/electron/region-capture.test.ts
+new file mode 100644
+index 00000000..9609b714
+--- /dev/null
++++ b/apps/desktop/electron/region-capture.test.ts
+@@ -0,0 +1,126 @@
++import { EventEmitter } from 'node:events'
++
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
++
++const native = vi.hoisted(() => ({
++  handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>(),
++  appOnce: vi.fn(),
++  appRemove: vi.fn(),
++  getSources: vi.fn(),
++  showMessageBox: vi.fn(),
++  fromWebContents: vi.fn(),
++  getAllWindows: vi.fn()
++}))
++
++vi.mock('electron', () => ({
++  app: { once: native.appOnce, removeListener: native.appRemove },
++  BrowserWindow: { fromWebContents: native.fromWebContents, getAllWindows: native.getAllWindows },
++  desktopCapturer: { getSources: native.getSources },
++  dialog: { showMessageBox: native.showMessageBox },
++  ipcMain: {
++    handle: (channel: string, handler: (...args: unknown[]) => Promise<unknown>) =>
++      native.handlers.set(channel, handler),
++    removeHandler: (channel: string) => native.handlers.delete(channel)
++  }
++}))
++
++import { installRegionCapture } from './region-capture'
++
++const channel = 'hermes:region-capture:capture'
++
++const image = {
++  isEmpty: () => false,
++  getSize: () => ({ width: 2000, height: 1000 }),
++  toPNG: () => new Uint8Array([137, 80, 78, 71])
++}
++
++function setup() {
++  const contents = Object.assign(new EventEmitter(), {
++    id: 42,
++    mainFrame: { url: 'file:///app/index.html?profile=work' }
++  })
++
++  const win = { webContents: contents, isDestroyed: () => false }
++  native.fromWebContents.mockImplementation(sender => (sender === contents ? win : null))
++  native.getAllWindows.mockReturnValue([win])
++  native.getSources.mockImplementation(async options =>
++    options.thumbnailSize.width === 0
++      ? [{ id: 'screen:1:0', name: 'Screen 1' }]
++      : [{ id: 'screen:1:0', name: 'Screen 1', thumbnail: image }]
++  )
++  native.showMessageBox.mockResolvedValue({ response: 1 })
++  const dispose = installRegionCapture({ rendererUrl: 'file:///app/index.html' })
++  const invoke = native.handlers.get(channel)!
++
++  return { contents, dispose, event: { sender: contents, senderFrame: contents.mainFrame }, invoke }
++}
++
++beforeEach(() => {
++  vi.clearAllMocks()
++  native.handlers.clear()
++})
++
++afterEach(() => {
++  native.handlers.clear()
++})
++
++describe('Region capture native boundary', () => {
++  it('is inert without a consumer and takes pixels only after the native source choice', async () => {
++    const { invoke, event, dispose } = setup()
++    expect(native.getSources).not.toHaveBeenCalled()
++    expect(native.showMessageBox).not.toHaveBeenCalled()
++    const result = await invoke(event)
++    expect(result).toMatchObject({ status: 'ok', width: 2000, height: 1000, selectionMode: 'image-crop' })
++    expect(native.getSources.mock.calls.map(([options]) => options.thumbnailSize.width)).toEqual([0, 4096])
++    expect(native.getSources.mock.invocationCallOrder[1]).toBeGreaterThan(
++      native.showMessageBox.mock.invocationCallOrder[0]
++    )
++    dispose()
++    expect(native.handlers.has(channel)).toBe(false)
++  })
++
++  it('denies subframes and foreign origins before enumerating screens', async () => {
++    const { invoke, event, dispose } = setup()
++    expect(await invoke({ ...event, senderFrame: { url: event.senderFrame.url } })).toMatchObject({ status: 'denied' })
++    event.senderFrame.url = 'https://example.com/index.html'
++    expect(await invoke(event)).toMatchObject({ status: 'denied' })
++    expect(native.getSources).not.toHaveBeenCalled()
++    dispose()
++  })
++
++  it('returns cancelled without acquiring screen pixels when the chooser is cancelled', async () => {
++    const { invoke, event, dispose } = setup()
++    native.showMessageBox.mockResolvedValueOnce({ response: 0 })
++    expect(await invoke(event)).toEqual({ status: 'cancelled' })
++    expect(native.getSources).toHaveBeenCalledTimes(1)
++    dispose()
++  })
++
++  it('does not deliver a late image after the owner navigates', async () => {
++    const { invoke, event, contents, dispose } = setup()
++    let finish!: (sources: unknown[]) => void
++    native.getSources.mockResolvedValueOnce([{ id: 'screen:1:0', name: 'Screen 1' }])
++    native.getSources.mockImplementationOnce(
++      () =>
++        new Promise(resolve => {
++          finish = resolve
++        })
++    )
++    const pending = invoke(event)
++    await vi.waitFor(() => expect(native.getSources).toHaveBeenCalledTimes(2))
++    contents.emit('did-start-navigation', {}, 'file:///app/index.html', false, true)
++    finish([{ id: 'screen:1:0', name: 'Screen 1', thumbnail: image }])
++    expect(await pending).toEqual({ status: 'cancelled' })
++    expect(contents.listenerCount('destroyed')).toBe(0)
++    expect(contents.listenerCount('did-start-navigation')).toBe(0)
++    dispose()
++  })
++
++  it('never exports another screen when the originally chosen source disappears', async () => {
++    const { invoke, event, dispose } = setup()
++    native.getSources.mockResolvedValueOnce([{ id: 'screen:1:0', name: 'Screen 1' }])
++    native.getSources.mockResolvedValueOnce([{ id: 'screen:2:0', name: 'Screen 2', thumbnail: image }])
++    expect(await invoke(event)).toMatchObject({ status: 'unsupported' })
++    dispose()
++  })
++})
+diff --git a/apps/desktop/electron/region-capture.ts b/apps/desktop/electron/region-capture.ts
+new file mode 100644
+index 00000000..b7d17b8f
+--- /dev/null
++++ b/apps/desktop/electron/region-capture.ts
+@@ -0,0 +1,113 @@
++import { app, BrowserWindow, desktopCapturer, dialog, ipcMain } from 'electron'
++import type { IpcMainInvokeEvent } from 'electron'
++
++import { createRegionCaptureController } from './region-capture-controller'
++import type { RegionCaptureResult } from './region-capture-types'
++
++/** Registers only an inert capability: no shortcut, UI, disk image or model call. */
++export function installRegionCapture({ rendererUrl }: { rendererUrl: string }): () => void {
++  const expected = new URL(rendererUrl)
++  const channel = 'hermes:region-capture:capture'
++
++  const controller = createRegionCaptureController({
++    async listSources() {
++      // Zero-sized thumbnails enumerate screens without retaining their pixels.
++      // Native Wayland may additionally show the compositor's source chooser.
++      const sources = await desktopCapturer.getSources({
++        types: ['screen'],
++        thumbnailSize: { width: 0, height: 0 },
++        fetchWindowIcons: false
++      })
++
++      return sources.map(source => ({ id: source.id, name: source.name }))
++    },
++    async chooseSource(sources, owner) {
++      const win = BrowserWindow.getAllWindows().find(item => item.webContents.id === owner)
++
++      if (!win || win.isDestroyed()) {
++        return null
++      }
++
++      const result = await dialog.showMessageBox(win, {
++        type: 'question',
++        title: 'Select a screen',
++        message: 'Choose a screen to capture for local region selection.',
++        detail: 'The image stays in this client. Selecting a screen does not send a prompt or run an action.',
++        buttons: ['Cancel', ...sources.map(source => source.name.replace(/\s+/g, ' ').slice(0, 120))],
++        defaultId: 0,
++        cancelId: 0,
++        noLink: true
++      })
++
++      return sources[result.response - 1]?.id ?? null
++    },
++    async captureSource(id) {
++      const sources = await desktopCapturer.getSources({
++        types: ['screen'],
++        thumbnailSize: { width: 4096, height: 4096 },
++        fetchWindowIcons: false
++      })
++
++      // A disappearing source never falls back to another screen. This also
++      // respects a portal denial or changed source during the second request.
++      return sources.find(source => source.id === id)?.thumbnail ?? null
++    }
++  })
++
++  const trustedWindow = (event: IpcMainInvokeEvent) => {
++    const win = BrowserWindow.fromWebContents(event.sender)
++
++    if (!win || win.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
++      return null
++    }
++
++    try {
++      const actual = new URL(event.senderFrame.url)
++
++      return actual.protocol === expected.protocol &&
++        actual.host === expected.host &&
++        actual.pathname === expected.pathname
++        ? win
++        : null
++    } catch {
++      return null
++    }
++  }
++
++  ipcMain.handle(channel, async (event): Promise<RegionCaptureResult> => {
++    const win = trustedWindow(event)
++
++    if (!win) {
++      return { status: 'denied', message: 'Screen capture requires the trusted desktop window.' }
++    }
++
++    const owner = event.sender.id
++    const cancel = () => controller.cancel(owner)
++
++    const navigate = (_event: unknown, _url: string, _inPlace: boolean, isMainFrame: boolean) => {
++      if (isMainFrame) {
++        cancel()
++      }
++    }
++
++    event.sender.once('destroyed', cancel)
++    event.sender.on('did-start-navigation', navigate)
++
++    try {
++      return await controller.capture(owner)
++    } finally {
++      event.sender.removeListener('destroyed', cancel)
++      event.sender.removeListener('did-start-navigation', navigate)
++    }
++  })
++
++  const dispose = () => {
++    controller.cancel()
++    ipcMain.removeHandler(channel)
++    app.removeListener('will-quit', dispose)
++  }
++
++  app.once('will-quit', dispose)
++
++  return dispose
++}
