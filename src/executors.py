@@ -6,6 +6,8 @@ upstream protocol pins and the distinction between CLI turn and MCP action limit
 from __future__ import annotations
 
 import ipaddress
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import math
 import os
@@ -19,6 +21,31 @@ from typing import Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+_CHILD_ENVIRONMENT = ContextVar("orchestrator_child_environment", default=None)
+
+
+@contextmanager
+def execution_environment(environment):
+    """Bind a profile's child environment without mutating the shared gateway.
+
+    Hermes supplies this from its owning profile's native credential scope.
+    Values remain in memory and are never placed in task payloads or receipts.
+    """
+    if not isinstance(environment, dict) or any(not isinstance(key, str) or not isinstance(value, str)
+                                               for key, value in environment.items()):
+        raise ValueError("Child environment must map strings to strings")
+    token = _CHILD_ENVIRONMENT.set(dict(environment))
+    try:
+        yield
+    finally:
+        _CHILD_ENVIRONMENT.reset(token)
+
+
+def execution_child_environment():
+    environment = _CHILD_ENVIRONMENT.get()
+    return None if environment is None else dict(environment)
 
 
 @dataclass
@@ -113,6 +140,7 @@ def _run_process(command: list[str], workdir: Path, prompt: str, timeout: float,
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         process = subprocess.Popen(command, cwd=str(workdir), stdin=subprocess.PIPE,
                                    stdout=stdout, stderr=stderr, shell=False,
+                                   env=execution_child_environment(),
                                    start_new_session=os.name == "posix")
         deadline = time.monotonic() + timeout
         first = True
@@ -381,7 +409,7 @@ class MCPAdapter(_RestrictedAdapter):
         events, output = [], []
         deadline = time.monotonic() + request.timeout
         for call in calls:
-            remaining = deadline - time.monotonic()
+            remaining = min(request.timeout, deadline - time.monotonic())
             if remaining <= 0:
                 return ExecutionResult("unknown", output="\n".join(output), error="MCP execution deadline exceeded", events=events)
             events.append({"type": "tool_call", "name": call["name"]})

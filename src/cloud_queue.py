@@ -53,8 +53,9 @@ def validate_payload(payload: Any) -> dict:
     """Check transport constraints; the node must enforce its local allowlists."""
     if not isinstance(payload, dict):
         raise QueueError("payload must be an object")
-    required = {"client_id", "target", "task", "workdir", "tools", "max_actions"}
-    optional = {"executor", "skills", "escalate_to", "require_approval_for", "metadata"}
+    required = {"client_id", "target", "task", "tools", "max_actions"}
+    optional = {"executor", "skills", "escalate_to", "require_approval_for", "metadata",
+                "workdir", "workspace_alias", "relative_dir"}
     if not required <= payload.keys() or payload.keys() - required - optional:
         raise QueueError("missing or unsupported payload fields")
     for field in ("client_id", "target"):
@@ -62,8 +63,19 @@ def validate_payload(payload: Any) -> dict:
     task = payload["task"]
     if not isinstance(task, str) or not task.strip() or len(task) > 100_000:
         raise QueueError("task must be nonempty text (at most 100000 characters)")
-    workdir = payload["workdir"]
-    if (not isinstance(workdir, str) or not workdir or len(workdir) > 4096
+    workdir = payload.get("workdir")
+    if "workdir" in payload and ("workspace_alias" in payload or "relative_dir" in payload):
+        raise QueueError("use either workdir or workspace_alias with relative_dir")
+    if "workdir" not in payload:
+        alias = payload.get("workspace_alias")
+        relative = payload.get("relative_dir", ".")
+        if not isinstance(alias, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", alias):
+            raise QueueError("workspace_alias must be a configured alias")
+        if (not isinstance(relative, str) or not relative or len(relative) > 4096
+                or any(ord(c) < 32 for c in relative) or "\\" in relative or ":" in relative
+                or posixpath.isabs(relative) or ".." in relative.split("/")):
+            raise QueueError("relative_dir must be a relative POSIX path without parent traversal")
+    elif (not isinstance(workdir, str) or not workdir or len(workdir) > 4096
             or any(ord(char) < 32 for char in workdir)
             or not (posixpath.isabs(workdir) or (ntpath.isabs(workdir) and bool(ntpath.splitdrive(workdir)[0])))
             or ".." in workdir.replace("\\", "/").split("/")):
@@ -120,6 +132,15 @@ class CloudQueue:
     def _expire(self, conn, now):
         conn.execute("""UPDATE cloud_tasks SET status='unknown',updated_at=?
                         WHERE status='claimed' AND lease_expires_at<=?""", (now, now))
+
+    def expire_leases(self):
+        """Return affected actors so transports can freeze uncertain quota too."""
+        with self._transaction() as conn:
+            now = self.clock()
+            actors = conn.execute("""SELECT DISTINCT client_id,target FROM cloud_tasks
+                WHERE status='claimed' AND lease_expires_at<=?""", (now,)).fetchall()
+            self._expire(conn, now)
+            return [(row["client_id"], row["target"]) for row in actors]
 
     @staticmethod
     def _task(row):
@@ -238,3 +259,17 @@ class CloudQueue:
             elif row["status"] == "claimed":
                 conn.execute("UPDATE cloud_tasks SET status='unknown',updated_at=? WHERE task_id=?", (now, task_id))
             return self._task(self._find(conn, task_id, client_id))
+
+    def revoke_target(self, client_id, target):
+        """Revoke queued work and fence running work without replaying effects."""
+        with self._transaction() as conn:
+            conn.execute("""UPDATE cloud_tasks SET status=CASE status
+                WHEN 'queued' THEN 'cancelled' ELSE 'unknown' END, updated_at=?
+                WHERE client_id=? AND target=? AND status IN ('queued','claimed')""",
+                (self.clock(), client_id, target))
+
+    def disconnect_target(self, client_id, target):
+        """Offline workers have ambiguous effects; queued work stays assigned."""
+        with self._transaction() as conn:
+            conn.execute("""UPDATE cloud_tasks SET status='unknown',updated_at=?
+                WHERE client_id=? AND target=? AND status='claimed'""", (self.clock(), client_id, target))
