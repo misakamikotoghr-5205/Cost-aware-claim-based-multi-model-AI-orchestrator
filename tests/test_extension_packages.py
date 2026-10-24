@@ -241,20 +241,24 @@ def test_prepare_checkout_refuses_wrong_pin_without_mutating_source(tmp_path, mo
     assert not list(checkout.iterdir())
 
 
-def test_prepare_applies_new_file_patch_idempotently_and_detects_tampering(tmp_path):
+@pytest.mark.parametrize("autocrlf", ["false", "true"])
+def test_prepare_applies_new_file_patch_idempotently_and_detects_tampering(tmp_path, autocrlf):
     import subprocess
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     def git(*args):
         return subprocess.run(["git", *args], cwd=checkout, check=True, capture_output=True, text=True).stdout.strip()
     git("init", "-q")
-    (checkout / "base.txt").write_text("base\n")
+    git("config", "core.autocrlf", autocrlf)
+    # Git patch context is byte-exact. Upstream enforces LF for native source;
+    # Windows write_text() would turn these test patch bytes into CRLF.
+    (checkout / "base.txt").write_bytes(b"base\n")
     git("add", "base.txt")
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
     commit = git("rev-parse", "HEAD")
     patches = tmp_path / "patches"
     patches.mkdir()
-    (patches / "0001.patch").write_text("diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+patched\n")
+    (patches / "0001.patch").write_bytes(b"diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+patched\n")
     spec = {"commit": commit, "repository": "unused"}
     assert prep.prepare_checkout(spec=spec, cache_dir=tmp_path, upstream=checkout, patch_dir=patches) == checkout
     assert (checkout / "new.txt").read_text() == "patched\n"
@@ -266,21 +270,25 @@ def test_prepare_applies_new_file_patch_idempotently_and_detects_tampering(tmp_p
         prep.prepare_checkout(spec=spec, cache_dir=tmp_path, upstream=checkout, patch_dir=patches)
 
 
-def test_prepare_accepts_only_exact_already_applied_patch(tmp_path):
+@pytest.mark.parametrize("autocrlf", ["false", "true"])
+def test_prepare_accepts_only_exact_already_applied_patch(tmp_path, autocrlf):
     import subprocess
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     def git(*args):
         return subprocess.run(["git", *args], cwd=checkout, check=True, capture_output=True, text=True).stdout.strip()
     git("init", "-q")
-    (checkout / "base.txt").write_text("base\n")
+    git("config", "core.autocrlf", autocrlf)
+    # Git patch context is byte-exact. Upstream enforces LF for native source;
+    # Windows write_text() would turn these test patch bytes into CRLF.
+    (checkout / "base.txt").write_bytes(b"base\n")
     git("add", "base.txt")
     git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
     commit = git("rev-parse", "HEAD")
     patches = tmp_path / "patches"
     patches.mkdir()
-    (patches / "0001.patch").write_text("diff --git a/base.txt b/base.txt\n--- a/base.txt\n+++ b/base.txt\n@@ -1 +1 @@\n-base\n+patched\n")
-    (checkout / "base.txt").write_text("patched\n")
+    (patches / "0001.patch").write_bytes(b"diff --git a/base.txt b/base.txt\n--- a/base.txt\n+++ b/base.txt\n@@ -1 +1 @@\n-base\n+patched\n")
+    (checkout / "base.txt").write_bytes(b"patched\n")
     prep.prepare_checkout(spec={"commit": commit, "repository": "unused"}, cache_dir=tmp_path, upstream=checkout, patch_dir=patches)
     assert (checkout / "base.txt").read_text() == "patched\n"
 
@@ -331,7 +339,7 @@ def test_runtime_bootstrap_is_default_and_skip_still_probes_actual_resolver(tmp_
         return json.dumps({'ready': True, 'kind': 'command', 'root': str(tmp_path), 'launcher': 'native-hermes'})
     monkeypatch.setattr(prep, 'run', run)
     assert prep.prepare_runtime(tmp_path, tmp_path / 'home')['ready'] is True
-    assert calls[0][0][-1] == '--runtime-only'
+    assert calls[0][0] == prep.runtime_setup_command(tmp_path)
     assert calls[0][1]['env']['HERMES_HOME'] == str(tmp_path / 'home')
     assert calls[1][0][1].endswith('probe_native_backend.mjs')
     calls.clear()
