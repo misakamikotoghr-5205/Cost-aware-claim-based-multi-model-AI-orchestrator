@@ -13,6 +13,7 @@ import json
 import math
 from pathlib import Path
 import re
+import stat
 import sys
 import tempfile
 import os
@@ -131,16 +132,162 @@ def read_state(plugin=PLUGIN_ID, default=None):
     return data
 
 
+class _WindowsPrivateFiles:
+    """Protect real files with an explicit DACL; DOS mode bits are not ACLs."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes as w
+        self.c, self.w = ctypes, w
+        self.advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        signatures = {
+            "OpenProcessToken": ([w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE)], w.BOOL),
+            "GetTokenInformation": ([w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD, ctypes.POINTER(w.DWORD)], w.BOOL),
+            "ConvertSidToStringSidW": ([w.LPVOID, ctypes.POINTER(w.LPWSTR)], w.BOOL),
+            "ConvertStringSecurityDescriptorToSecurityDescriptorW": ([w.LPCWSTR, w.DWORD, ctypes.POINTER(w.LPVOID), ctypes.POINTER(w.DWORD)], w.BOOL),
+            "SetNamedSecurityInfoW": ([w.LPWSTR, ctypes.c_int, w.DWORD, w.LPVOID, w.LPVOID, w.LPVOID, w.LPVOID], w.DWORD),
+            "GetFileSecurityW": ([w.LPCWSTR, w.DWORD, w.LPVOID, w.DWORD, ctypes.POINTER(w.DWORD)], w.BOOL),
+            "GetSecurityDescriptorControl": ([w.LPVOID, ctypes.POINTER(w.WORD), ctypes.POINTER(w.DWORD)], w.BOOL),
+            "GetSecurityDescriptorOwner": ([w.LPVOID, ctypes.POINTER(w.LPVOID), ctypes.POINTER(w.BOOL)], w.BOOL),
+            "GetSecurityDescriptorDacl": ([w.LPVOID, ctypes.POINTER(w.BOOL), ctypes.POINTER(w.LPVOID), ctypes.POINTER(w.BOOL)], w.BOOL),
+            "GetAclInformation": ([w.LPVOID, w.LPVOID, w.DWORD, ctypes.c_int], w.BOOL),
+            "GetAce": ([w.LPVOID, w.DWORD, ctypes.POINTER(w.LPVOID)], w.BOOL),
+        }
+        for name, (arguments, result) in signatures.items():
+            function = getattr(self.advapi, name)
+            function.argtypes, function.restype = arguments, result
+        self.kernel.GetCurrentProcess.argtypes, self.kernel.GetCurrentProcess.restype = [], w.HANDLE
+        self.kernel.CloseHandle.argtypes, self.kernel.CloseHandle.restype = [w.HANDLE], w.BOOL
+        self.kernel.LocalFree.argtypes, self.kernel.LocalFree.restype = [w.LPVOID], w.LPVOID
+        token = w.HANDLE()
+        self._require(self.advapi.OpenProcessToken(self.kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)))
+        try:
+            needed = w.DWORD()
+            self.advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))
+            if ctypes.get_last_error() != 122 or needed.value == 0:
+                raise ctypes.WinError(ctypes.get_last_error())
+            user = ctypes.create_string_buffer(needed.value)
+            self._require(self.advapi.GetTokenInformation(token, 1, user, needed.value, ctypes.byref(needed)))
+            sid = ctypes.cast(user, ctypes.POINTER(w.LPVOID)).contents.value
+            self.user_sid = self._sid(sid)
+        finally:
+            self.kernel.CloseHandle(token)
+        # Administrators and SYSTEM already control this process/its files.
+        self.allowed_sids = {self.user_sid, "S-1-5-18", "S-1-5-32-544"}
+
+    def _require(self, result):
+        if not result:
+            raise self.c.WinError(self.c.get_last_error())
+
+    def _sid(self, sid):
+        pointer = self.w.LPWSTR()
+        self._require(self.advapi.ConvertSidToStringSidW(sid, self.c.byref(pointer)))
+        try:
+            return pointer.value
+        finally:
+            self.kernel.LocalFree(self.c.cast(pointer, self.w.LPVOID))
+
+    def protect(self, path):
+        # D:P sets SE_DACL_PROTECTED, preventing parent/Everyone inheritance.
+        sddl = "D:P" + "".join(f"(A;;FA;;;{sid})" for sid in sorted(self.allowed_sids))
+        descriptor = self.w.LPVOID()
+        self._require(self.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, 1, self.c.byref(descriptor), None))
+        try:
+            present, defaulted, dacl = self.w.BOOL(), self.w.BOOL(), self.w.LPVOID()
+            self._require(self.advapi.GetSecurityDescriptorDacl(
+                descriptor, self.c.byref(present), self.c.byref(dacl), self.c.byref(defaulted)))
+            result = self.advapi.SetNamedSecurityInfoW(str(path), 1, 0x00000004 | 0x80000000,
+                                                      None, None, dacl, None)
+            if result:
+                raise self.c.WinError(result)
+        finally:
+            self.kernel.LocalFree(descriptor)
+
+    def inspect(self, path):
+        c, w = self.c, self.w
+        needed = w.DWORD()
+        flags = 0x00000001 | 0x00000004  # OWNER + DACL
+        self.advapi.GetFileSecurityW(str(path), flags, None, 0, c.byref(needed))
+        if c.get_last_error() != 122 or needed.value == 0:
+            raise c.WinError(c.get_last_error())
+        descriptor = c.create_string_buffer(needed.value)
+        self._require(self.advapi.GetFileSecurityW(str(path), flags, descriptor, needed.value, c.byref(needed)))
+        control, revision = w.WORD(), w.DWORD()
+        self._require(self.advapi.GetSecurityDescriptorControl(descriptor, c.byref(control), c.byref(revision)))
+        owner, defaulted = w.LPVOID(), w.BOOL()
+        self._require(self.advapi.GetSecurityDescriptorOwner(descriptor, c.byref(owner), c.byref(defaulted)))
+        owner_sid = self._sid(owner)
+        present, dacl = w.BOOL(), w.LPVOID()
+        self._require(self.advapi.GetSecurityDescriptorDacl(descriptor, c.byref(present), c.byref(dacl), c.byref(defaulted)))
+        protected = bool(control.value & 0x1000)
+        if not present.value or not dacl.value:
+            return {"mechanism": "windows-dacl", "secure": False, "protected": protected, "owner": owner_sid, "trustees": []}
+
+        class AclSize(c.Structure):
+            _fields_ = [("count", w.DWORD), ("used", w.DWORD), ("free", w.DWORD)]
+
+        class Ace(c.Structure):
+            _fields_ = [("type", w.BYTE), ("flags", w.BYTE), ("size", w.WORD), ("mask", w.DWORD)]
+
+        size = AclSize()
+        self._require(self.advapi.GetAclInformation(dacl, c.byref(size), c.sizeof(size), 2))
+        trustees, direct_full_access = [], True
+        for index in range(size.count):
+            pointer = w.LPVOID()
+            self._require(self.advapi.GetAce(dacl, index, c.byref(pointer)))
+            ace = c.cast(pointer, c.POINTER(Ace)).contents
+            if ace.type != 0 or ace.size < 16:
+                direct_full_access = False
+                continue
+            trustees.append(self._sid(pointer.value + 8))
+            direct_full_access = direct_full_access and ace.flags == 0 and ace.mask == 0x001F01FF
+        secure = (protected and direct_full_access and owner_sid in self.allowed_sids
+                  and len(trustees) == len(self.allowed_sids) and set(trustees) == self.allowed_sids)
+        return {"mechanism": "windows-dacl", "secure": secure, "protected": protected,
+                "owner": owner_sid, "trustees": trustees}
+
+
+def private_file_security(path: Path):
+    """Inspect actual platform permissions without reading the file contents."""
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        return {"secure": False, "mechanism": "not-a-regular-file"}
+    if os.name == "nt":
+        return _WindowsPrivateFiles().inspect(path)
+    mode = stat.S_IMODE(info.st_mode)
+    return {"mechanism": "posix-mode", "mode": mode,
+            "secure": mode == 0o600 and info.st_uid == os.getuid()}
+
+
+def _protect_private_file(path: Path):
+    if os.name == "nt":
+        _WindowsPrivateFiles().protect(path)
+    else:
+        path.chmod(0o600)
+    if private_file_security(path)["secure"] is not True:
+        raise PermissionError("Private file access control could not be verified")
+
+
 def write_private(path: Path, value: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
             temporary = stream.name
+            # Protect the empty file before any transport token is written.
+            _protect_private_file(Path(temporary))
             json.dump(value, stream, ensure_ascii=False, allow_nan=False)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        try:
+            if private_file_security(path)["secure"] is not True:
+                raise PermissionError("Published private file access control could not be verified")
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
     finally:
         if temporary and Path(temporary).exists():
             Path(temporary).unlink()

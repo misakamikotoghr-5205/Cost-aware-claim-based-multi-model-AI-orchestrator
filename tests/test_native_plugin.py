@@ -4,6 +4,7 @@ from copy import deepcopy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -285,11 +286,48 @@ def test_pairing_stores_only_node_grant_and_never_returns_it(installed, monkeypa
     assert token not in json.dumps(installed.backend.settings())
     path = installed.backend.state_path(filename="node-grant.json")
     assert json.loads(path.read_text()) == {"token": token, "server_url": "https://owned.example", "owner_id": "owner", "node_id": "node"}
-    assert path.stat().st_mode & 0o077 == 0
+    security = installed.backend.private_file_security(path)
+    assert security["secure"] is True
+    if os.name == "nt":
+        assert security["mechanism"] == "windows-dacl" and security["protected"] is True
+    else:
+        assert security["mechanism"] == "posix-mode" and security["mode"] == 0o600
     config = installed.backend.settings(); config["server"]["url"] = "https://other.example"
     installed.backend.write_state("orchestrator-core", config)
     with pytest.raises(ValueError, match="does not match"):
         installed.backend._fleet(node=True)
+
+
+def test_private_writer_protects_before_token_write_and_verifies_final_file(installed, monkeypatch, tmp_path):
+    original = installed.backend._protect_private_file
+    protected = []
+    def protect_empty(path):
+        assert path.stat().st_size == 0
+        original(path)
+        assert installed.backend.private_file_security(path)["secure"] is True
+        protected.append(path)
+    monkeypatch.setattr(installed.backend, "_protect_private_file", protect_empty)
+    path = tmp_path / "transport-grant.json"
+    installed.backend.write_private(path, {"token": "private-fixture"})
+    assert len(protected) == 1 and not protected[0].exists()
+    assert json.loads(path.read_text()) == {"token": "private-fixture"}
+    assert installed.backend.private_file_security(path)["secure"] is True
+
+
+def test_private_file_audit_rejects_real_platform_permission_widening(installed, tmp_path):
+    path = tmp_path / "transport-grant.json"
+    installed.backend.write_private(path, {"token": "private-fixture"})
+    if os.name == "nt":
+        import subprocess
+        # Numeric Everyone SID needs no account lookup. This changes a fixture,
+        # and verifies that the audit reads the actual DACL, not DOS mode bits.
+        subprocess.run(["icacls", str(path), "/grant", "*S-1-1-0:R"],
+                       check=True, capture_output=True, timeout=10)
+    else:
+        path.chmod(0o644)
+    assert installed.backend.private_file_security(path)["secure"] is False
+    installed.backend._protect_private_file(path)
+    assert installed.backend.private_file_security(path)["secure"] is True
 
 
 def test_optional_judge_model_pull_progress_success_and_cancel_are_honest(installed, monkeypatch):
