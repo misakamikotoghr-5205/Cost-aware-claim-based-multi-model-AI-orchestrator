@@ -1,0 +1,11 @@
+{
+  "name": "free-models",
+  "label": "Free model discovery",
+  "description": "Native desktop REST backend",
+  "version": "0.1.0",
+  "tab": {
+    "hidden": true
+  },
+  "entry": "empty.js",
+  "api": "plugin_api.py"
+}
