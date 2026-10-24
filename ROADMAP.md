@@ -1,10 +1,47 @@
-# Roadmap
+# Current delivery and roadmap
+
+## Delivered: unified single-client runtime
+
+- One Windows/Ubuntu desktop client for configuration, task input and receipts.
+- Original offline planner and scoring preserved.
+- Locally configured Hermes, DeepSeek Harness, Ollama and restricted MCP bridge.
+- Optional free-model evidence/cache extension; disabled by default.
+- Optional loopback Ollama judge; disabled by default and constrained by policy.
+- Authenticated cloud queue, task identity, leases, heartbeat and reconnect IDs.
+- Cloud-owned SQLite ledger with explicit quota units and atomic reservations.
+- Independent local verifier, durable receipts and conservative unknown outcomes.
+- Offline protocol demo and real subprocess/HTTP integration tests, with CI.
+
+See [cloud-local.md](docs/cloud-local.md) for operational details. Delivered code
+is not equivalent to real-machine or live-account acceptance.
+
+## Acceptance still required
+
+- Install and authenticate selected native executors on each intended machine.
+- Verify current upstream CLI versions and real subscription quota sources.
+- Exercise Windows and Ubuntu GUI sessions, real local judge/model hardware,
+  paired desktop tools and Computer Use.
+- Deploy private cloud connectivity, credentials, backups and reconciliation.
+
+## Stability work
+
+- Broader multi-client recovery and scheduling beyond the atomic quota floor protection.
+- Crash hardening, durable storage recovery and managed process containment.
+- General MCP sessions/transports beyond the restricted tools/call bridge.
+- Broader GUI usability, installer packaging, auto-update and OS acceptance.
+- Quality-dependent outcome learning and optional live multi-model voting.
+
+The earlier planner-to-runtime vision is retained below for context; entries
+implemented by the client runtime above are no longer future-only promises.
+
+---
+
 
 The honest version → vision path. v0.1 is a **deterministic, offline planner**:
 it decides without calling models (so deciding never burns quota). Later
 versions progressively add live model interaction and real execution.
 
-## v0.1 — Planner MVP ✅ (current)
+## v0.1 — Planner MVP ✅ (preserved)
 - Task cards + value levels (`src/task_card.py`)
 - Capability / price / quota configs (`configs/*.yaml`)
 - Cost- & quota-aware scoring with transparent breakdown (`scoring_engine.py`)

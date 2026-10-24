@@ -8,7 +8,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![status](https://img.shields.io/badge/status-MVP%20v0.1%20(planner)-orange)
+![status](https://img.shields.io/badge/status-cloud%2Flocal%20client-blue)
 
 > **Origin:** First published **2026-06-25** by **misakamikoto**, built with a
 > "vibe coding" workflow. The idea is meant to be open — fork it, build on it.
@@ -28,29 +28,51 @@ resolves disagreements by *weighted voting*, and scores every candidate with a
 transparent, **cost- and quota-aware** function — so a powerful-but-nearly-exhausted
 model is saved for the task only it can do.
 
-### What's actually implemented (v0.1, honest status)
+### Current implementation
 
-This is a **decision/planner MVP**. It is **deterministic and local — it makes
-no model calls** to decide. That is deliberate: scoring every task by polling 6
-models would burn the very quota this project exists to conserve.
+The original deterministic offline planner remains available. The repository now
+also includes **one Windows/Ubuntu desktop client**, opt-in executor adapters,
+a cloud queue and quota ledger, local verification and durable receipts.
+**Free-model discovery and a local judging model are optional extensions**, both
+disabled by default; operator-configured subscription/local models work without
+them. Choosing a model still defaults to the existing zero-model-call scorer.
 
 | Capability | Status |
 |---|---|
-| Task cards, value levels, budgets | ✅ implemented |
-| Capability cards + price + quota configs | ✅ implemented |
-| Cost/quota-aware scoring with transparent breakdown | ✅ implemented |
-| Quota **Shadow Price** (opportunity cost) | ✅ implemented |
-| Claim synthesis + agreement check | ✅ implemented (offline stand-in) |
-| Weighted voting tie-break | ✅ implemented (offline stand-in) |
-| Role assignment (primary/verifier/fallback/summarizer) | ✅ implemented |
-| Failure diagnosis + reroute/stop rules | ✅ implemented |
-| **Live** capability discovery (Grok/Gemini) | 🔜 roadmap (`--discover`) |
-| **Live** multi-model voting (real calls) | 🔜 roadmap (`--live-vote`) |
-| Real executor adapters (Hermes/Codex/Claude) | 🔜 roadmap (`integrations/`) |
+| Offline scoring, claims, voting, role assignment and shadow prices | Implemented; deterministic |
+| Unified desktop configuration and task execution | Implemented; Linux Tk/X virtual-display smoke passed; real Windows deployment still pending |
+| Hermes / DeepSeek Harness / Ollama / restricted MCP execution | Implemented; tested with real fixture subprocesses and loopback HTTP |
+| Model evidence import, TTL/expiry cache and change events | Implemented; optional extension |
+| Optional loopback Ollama judge | Implemented; cannot override admission policy |
+| Atomic quota reservations, explicit units and unknown-outcome holds | Implemented; real provider entitlement requires observed account data |
+| Authenticated cloud tasks, leases, reconnect IDs and local receipts | Implemented; single-client functional path |
+| Real subscription/GUI/Computer Use deployment acceptance | Not performed in this development environment |
 
-See [ROADMAP.md](./ROADMAP.md) for the v0.1 → v1.0 path.
+See [desktop setup](docs/desktop.md), [cloud/local runtime](docs/cloud-local.md)
+and [ROADMAP.md](ROADMAP.md) for scope and validation limits.
 
-## Quick start
+## Desktop quick start
+
+```bash
+python -m pip install -r requirements.txt
+python -m src.desktop
+```
+
+Configure your workspace and executor in one client. Enable free-model discovery
+or the local judging extension only when you want them. External executors own
+their own installation and authentication. Tk support may need the OS package
+`python3-tk` on Ubuntu; Windows Python installers normally include it.
+
+The advanced, account-free protocol fixture exercises real local HTTP, file
+execution, quota reservation and independent verification:
+
+```bash
+python examples/cloud-local/offline_demo.py
+```
+
+This is explicitly a fixture, not a real subscription or model deployment test.
+
+## Offline planner quick start
 
 ```bash
 git clone https://github.com/misakamikotoghr-5205/Cost-aware-claim-based-multi-model-AI-orchestrator.git
@@ -114,7 +136,7 @@ cost-aware-ai-orchestrator/
 ├── configs/        capability_cards / scoring_weights / quota_policy / model_prices / routing_rules (.yaml)
 ├── src/            task_card · registry · quota_manager · scoring_engine · claim_engine · voting_engine · rerouter · orchestrator · cli
 ├── examples/       code / research / video / image / complex_project / batch (.yaml)
-├── tests/          test_scoring.py  (9 tests, no model calls)
+├── tests/          planner, adapters, discovery, ledger, queue, routing and runtime tests
 ├── docs/           architecture · task-market · claim-system · scoring · quota-policy (.md)
 ├── skills/         SKILL.md  (drop-in agent skill)
 └── integrations/   hermes_pipeline_router.py  (a real-world executor reference)
@@ -149,18 +171,21 @@ Issues and PRs welcome. Never include real keys/tokens in issues or logs.
 
 > **便宜模型负责探索，强模型负责判断，高成本模型负责定稿。**
 
-### 当前实现状态（v0.1，诚实标注）
+### 当前实现状态
 
-这是一个**决策/规划 MVP**，**本地确定性运行、决策时不调用任何模型**。这是有意为之：
-为了给每个任务投票而真的去调用 6 个模型，本身就会烧掉这个项目想节省的额度。
+原有离线规划器继续保留。现在新增**统一的 Windows/Ubuntu 桌面客户端**，集中配置
+工作目录、执行器、额度、云端连接和任务回执。**免费模型发现与客户端判断模型都作为
+可选扩展，默认关闭**；不安装它们也能使用自己配置的订阅或本地执行器。
 
-- ✅ 已实现：任务卡片、价值分级、能力卡/价格/额度配置、成本与额度感知评分（带透明
-  打分明细）、额度影子价格、认领合成与一致性判断、加权投票仲裁、角色分配、失败诊断
-  与重路由/停止规则。
-- 🔜 路线图：用 Grok/Gemini 做**实时能力发现**（`--discover`）、**真实多模型投票**
-  （`--live-vote`）、以及 `integrations/` 里的真实执行器适配（Hermes/Codex/Claude）。
+已实现 Hermes/DeepSeek Harness/Ollama/受限 MCP 适配、客户端评分、原子额度预留、
+云端任务领取及租约、独立验收和未知结果保留。离线集成测试使用真实子进程和本机 HTTP；
+真实订阅登录、Windows/Ubuntu 真机桌面、Computer Use 等部署验收尚未完成，不能当作
+已经实测。详见 [桌面客户端](docs/desktop.md) 与 [云端本地配置](docs/cloud-local.md)。
 
-详见 [ROADMAP.md](./ROADMAP.md)。
+```bash
+python -m pip install -r requirements.txt
+python -m src.desktop
+```
 
 ### 快速开始
 
