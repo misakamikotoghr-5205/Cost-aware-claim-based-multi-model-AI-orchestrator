@@ -123,7 +123,12 @@ def inspect_package(archive: str | Path) -> dict:
                 if hashlib.sha256(bundle.read(name)).hexdigest() != digest:
                     raise ExtensionError("package content hash mismatch: " + name)
             # Only read data. Never load plugin code during validation.
-            import yaml
+            try:
+                import hermes_yaml as yaml
+            except ModuleNotFoundError as exc:
+                if exc.name != "hermes_yaml":
+                    raise
+                import yaml
             try:
                 native = yaml.safe_load(bundle.read("plugin.yaml"))
             except yaml.YAMLError as exc:
