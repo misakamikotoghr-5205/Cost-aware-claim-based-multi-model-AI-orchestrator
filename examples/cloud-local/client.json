@@ -1,0 +1,25 @@
+{
+  "workspace_root": ".",
+  "allowed_tools": [],
+  "max_actions": 20,
+  "models": [
+    {
+      "model_id": "qwen3:4b",
+      "provider": "ollama",
+      "executor": "ollama",
+      "billing_mode": "local",
+      "available": true,
+      "capabilities": {"implementation": 0.7, "reasoning": 0.7}
+    }
+  ],
+  "adapters": {"ollama": {"base_url": "http://127.0.0.1:11434"}},
+  "routing": {"allow_paid_api": false},
+  "extensions": {
+    "discovery": {"enabled": false, "cache": ".orchestrator-models.json"},
+    "judge": {"enabled": false, "config": {"base_url": "http://127.0.0.1:11434", "model": "qwen3:4b", "timeout": 5}}
+  },
+  "verification": {
+    "command": ["python", "-c", "import sys; text=sys.stdin.read(); assert text.strip(); print('nonempty output verified')"],
+    "timeout": 30
+  }
+}
