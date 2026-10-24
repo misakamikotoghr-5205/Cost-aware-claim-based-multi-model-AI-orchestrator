@@ -30,22 +30,25 @@ model is saved for the task only it can do.
 
 ### Current implementation
 
-The original deterministic offline planner remains available. The repository now
-also includes **one Windows/Ubuntu desktop client**, opt-in executor adapters,
-a cloud queue and quota ledger, local verification and durable receipts.
-**Free-model discovery and a local judging model are optional extensions**, both
-disabled by default; operator-configured subscription/local models work without
-them. Choosing a model still defaults to the existing zero-model-call scorer.
+The desktop is based on the **complete native Hermes Electron client** at a
+locked upstream revision. Conversations, streaming, history, approvals, Skills,
+MCP, tools, profiles and provider OAuth/API settings remain upstream features.
+The earlier Tk task form is retained only with `--legacy`.
+
+Use local provider OAuth/API independently, or connect one cloud to multiple
+paired local machines. Cloud transport tokens are separate from model credentials.
+**Local judgment, free/limited-free discovery and the smart pointer are three
+separate installable extension ZIPs.** They are delivered together, not preinstalled.
 
 | Capability | Status |
 |---|---|
 | Offline scoring, claims, voting, role assignment and shadow prices | Implemented; deterministic |
-| Unified desktop configuration and task execution | Implemented; Linux Tk/X virtual-display smoke passed; real Windows deployment still pending |
+| Native Hermes desktop and upstream features | Whole upstream retained; narrow native region-capture patch |
 | Hermes / DeepSeek Harness / Ollama / restricted MCP execution | Implemented; tested with real fixture subprocesses and loopback HTTP |
-| Model evidence import, TTL/expiry cache and change events | Implemented; optional extension |
-| Optional loopback Ollama judge | Implemented; cannot override admission policy |
+| Free-model discovery | Separate installation package; explicit online refresh, TTL cache and JSON import |
+| Local judgment and smart pointer | Separate packages; local model setup and intent-to-draft workflow |
 | Atomic quota reservations, explicit units and unknown-outcome holds | Implemented; real provider entitlement requires observed account data |
-| Authenticated cloud tasks, leases, reconnect IDs and local receipts | Implemented; single-client functional path |
+| One cloud and multiple local nodes | Pairing, revocable tokens, capability routing, workspaces and receipts |
 | Real subscription/GUI/Computer Use deployment acceptance | Not performed in this development environment |
 
 See [desktop setup](docs/desktop.md), [cloud/local runtime](docs/cloud-local.md)
@@ -58,10 +61,18 @@ python -m pip install -r requirements.txt
 python -m src.desktop
 ```
 
-Configure your workspace and executor in one client. Enable free-model discovery
-or the local judging extension only when you want them. External executors own
-their own installation and authentication. Tk support may need the OS package
-`python3-tk` on Ubuntu; Windows Python installers normally include it.
+The launcher prepares/builds the pinned native source using its locked tooling.
+See [native setup](docs/native-client.md) for prerequisites and native build
+commands. OAuth/API authentication stays in Hermes's native provider settings.
+Build all optional packages together, then install only the ZIPs you want:
+
+```bash
+python scripts/build_extensions.py --ids all --upstream /path/to/pinned/hermes
+```
+
+Uninstalled extensions contribute no UI, hooks, screenshot capture or inference.
+Local model weights are downloaded explicitly when requested, rather than being
+presented as bundled weights. See [extension setup](docs/native-extensions.md).
 
 The advanced, account-free protocol fixture exercises real local HTTP, file
 execution, quota reservation and independent verification:
@@ -173,9 +184,13 @@ Issues and PRs welcome. Never include real keys/tokens in issues or logs.
 
 ### 当前实现状态
 
-原有离线规划器继续保留。现在新增**统一的 Windows/Ubuntu 桌面客户端**，集中配置
-工作目录、执行器、额度、云端连接和任务回执。**免费模型发现与客户端判断模型都作为
-可选扩展，默认关闭**；不安装它们也能使用自己配置的订阅或本地执行器。
+桌面以 **Hermes 完整原生 Electron 客户端**为基础，保留原生聊天、历史、工具、
+Skills、MCP、审批、多 profile 和 OAuth/API 配置。无需云端也可独立使用。
+云端支持配对多台本地机，账户身份与节点身份分离。
+
+**判断模型、免费/限免模型发现、智能指针分别交付独立扩展 ZIP**，用户按需安装、启用、
+卸载；不再是预装功能的三个开关。智能指针从选区与关键词给出意图候选，支持补词换一批，
+选定后进入原生聊天草稿，由用户确认发送。模型权重按需下载，不默认启动模型或读取屏幕。
 
 已实现 Hermes/DeepSeek Harness/Ollama/受限 MCP 适配、客户端评分、原子额度预留、
 云端任务领取及租约、独立验收和未知结果保留。离线集成测试使用真实子进程和本机 HTTP；
