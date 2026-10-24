@@ -161,3 +161,24 @@ it('cropped image attachment requires an explicit checkbox and final confirmatio
   expect(target).toBe('chat-one'); expect(images).toHaveLength(1); expect(images[0].type).toBe('image/png')
   expect(mocks.submit).not.toHaveBeenCalled()
 })
+
+it('revoking image consent while final commit waits invalidates delivery before attachment', async () => {
+  let finishCommit: (value: unknown) => void = () => undefined
+  const api = vi.fn((request: any) => request.path.endsWith('/sessions')
+    ? Promise.resolve({ session_id: 'consent', revision: 1, candidates: [{ action_id: 'inspect', label: '分析选区', description: '检查内容', preview_prompt: '请分析选区' }] })
+    : new Promise(resolve => { finishCommit = resolve }))
+  ;(window as any).hermesDesktop = { api, regionCapture: { capture: async () => ({ ...captured, region_already_cropped: true, selectionMode: 'screen-region' }) } }
+  render(createElement(PointerPane, { ctx }))
+  fireEvent.click(screen.getByText('开始圈选')); await screen.findByAltText('已圈选区域预览')
+  fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('分析选区 — 检查内容'))
+  fireEvent.click(screen.getByLabelText('附上所选区域图片'))
+  fireEvent.click(screen.getByText('确认加入聊天草稿'))
+  expect((screen.getByLabelText('聊天草稿预览') as HTMLTextAreaElement).disabled).toBe(true)
+  expect((screen.getByLabelText('选区原文 / 表格数据（可粘贴）') as HTMLTextAreaElement).disabled).toBe(true)
+  expect(mocks.attach).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByLabelText('附上所选区域图片'))
+  expect((screen.getByLabelText('附上所选区域图片') as HTMLInputElement).checked).toBe(false)
+  await act(async () => finishCommit({ draft_prompt: '请分析选区', executed: false }))
+  expect(mocks.attach).not.toHaveBeenCalled(); expect(mocks.insert).not.toHaveBeenCalled()
+  expect(screen.queryByText('确认加入聊天草稿')).toBeNull()
+})

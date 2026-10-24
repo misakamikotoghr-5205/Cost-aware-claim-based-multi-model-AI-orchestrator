@@ -186,15 +186,18 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
     <div className="pointer-chips">{['整理', '检查', '翻译', '解释', '公式', '格式'].map(keyword => <Button key={keyword} variant="outline" size="xs"
       onClick={() => editKeywords([keywords, keyword].filter(Boolean).join(' '))}>{keyword}</Button>)}</div>
     <div className="pointer-row"><Button disabled={!region || busy} onClick={() => propose()}> {session ? '追加关键词 / 换一批' : '生成多个候选'} </Button></div>
-    <label className="pointer-label">选区原文 / 表格数据（可粘贴）<Textarea value={selectedText} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction(''); if (busy) setSession(null); setBusy(false) }} placeholder="不发送图片时，请在这里粘贴要处理的原文或表格内容。" /></label>
-    <div className="pointer-row"><Switch aria-label="附上所选区域图片" checked={attachImage} onCheckedChange={setAttachImage} /><span>附上所选区域图片（发送时使用当前会话模型）</span></div>
+    <label className="pointer-label">选区原文 / 表格数据（可粘贴）<Textarea value={selectedText} disabled={busy} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction(''); if (busy) setSession(null); setBusy(false) }} placeholder="不发送图片时，请在这里粘贴要处理的原文或表格内容。" /></label>
+    <div className="pointer-row"><Switch aria-label="附上所选区域图片" checked={attachImage} onCheckedChange={enabled => {
+      gate.current.next(); setAttachImage(enabled)
+      if (busy) { setBusy(false); setSession(null); setDraft(''); setSelectedAction('') }
+    }} /><span>附上所选区域图片（发送时使用当前会话模型）</span></div>
     <p>图片默认不加入草稿。只有勾选并最终确认后才加入严格裁剪的选区；点击聊天发送后才由原生附件流程交给会话模型。</p>
     {session?.keywords && <p>累计关键词：{session.keywords}</p>}
     {dirty && session && <p>关键词已修改，请先追加生成新候选。</p>}
     {session?.question && <p role="status">{session.question}</p>}
     {session && <div className="pointer-intents">{session.candidates.map(candidate => <Button key={candidate.action_id} variant={selectedAction === candidate.action_id ? 'default' : 'secondary'} aria-pressed={selectedAction === candidate.action_id} disabled={busy || dirty}
       onClick={() => choose(candidate)}>{candidate.label} — {candidate.description}</Button>)}</div>}
-    {draft && <><label className="pointer-label">聊天草稿预览<Textarea value={draft} onChange={event => setDraft(event.target.value)} /></label>
+    {draft && <><label className="pointer-label">聊天草稿预览<Textarea value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} /></label>
       <Button onClick={insertDraft} disabled={busy || dirty || (!attachImage && !selectedText.trim())}>确认加入聊天草稿</Button><p>请提供选区原文或明确勾选附图，确保会话模型能看到要处理的内容。此扩展不会自动发送聊天。</p></>}
     {notice && <p role="status">{notice}</p>}
     </>}
