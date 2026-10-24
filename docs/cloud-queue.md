@@ -153,12 +153,23 @@ Send the original local ID on each request, not the returned internal ID.
 | Route | Request |
 | --- | --- |
 | `GET /v1/quota?account=A&model=M` | Snapshot for an allowed account; model defaults to `*`. |
-| `POST /v1/quota/reserve` | `{"reservation_id":"r1","account":"A","amount":1,"unit":"requests","model":"*"}` |
+| `POST /v1/quota/reserve` | `{"reservation_id":"r1","account":"A","amount":1,"unit":"requests","model":"*","minimum_remaining":2}` |
 | `POST /v1/quota/settle` | `{"reservation_id":"r1","actual_amount":1}` |
 | `POST /v1/quota/release` | `{"reservation_id":"r1"}` for known unused reservations. |
 | `POST /v1/quota/unknown` | `{"reservation_id":"r1"}`; `mark_unknown` is an alias. |
 
 A reservation replay is an accounting retry, never permission to execute twice.
+`minimum_remaining` defaults to zero and uses the pool's explicit amount unit.
+The ledger atomically requires `remaining - held - amount >= minimum_remaining`
+inside the same transaction that creates the reservation. Use it for a protected
+reserve: a client-side snapshot check alone is unsafe under concurrent requests.
+The HTTP layer rejects boolean, negative, nonfinite or nonnumeric floors, values
+above 1e15 and precision beyond nine decimal places. A reservation replay must
+use the same floor as its original request.
+
+Any UNKNOWN reservation blocks new reservations for that account/model pool,
+even when a snapshot still shows a positive arithmetic balance. The executed
+amount might be uncertain; a new quota observation alone does not resolve it.
 Unknown holds cannot be released by this API; explicit reconciliation is an
 administrator operation on the ledger. Freshness, amounts, units and atomic
 availability are enforced by `QuotaLedger`. Missing/unsafe quota fails closed.

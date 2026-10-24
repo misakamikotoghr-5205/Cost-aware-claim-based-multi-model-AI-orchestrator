@@ -210,9 +210,9 @@ def test_quota_http_contract_namespaces_reservations_and_binds_accounts(queue):
         def snapshot(self, account, model="*"):
             return {"account": account, "model": model, "available": 9, "fresh": True}
 
-        def reserve(self, reservation_id, account, amount, model="*", unit=None):
+        def reserve(self, reservation_id, account, amount, model="*", unit=None, minimum_remaining=0):
             result = dict(reservation_id=reservation_id, account=account, amount=amount,
-                          model=model, unit=unit, state="RESERVED")
+                          model=model, unit=unit, minimum_remaining=minimum_remaining, state="RESERVED")
             self.reservations[reservation_id] = result
             return result
 
@@ -237,9 +237,12 @@ def test_quota_http_contract_namespaces_reservations_and_binds_accounts(queue):
         assert request(server, "/v1/quota?account=subscription")[1]["quota"]["available"] == 9
         assert request(server, "/v1/quota?account=other")[0] == 403
         assert request(server, "/v1/quota?account=subscription", token=TOKEN_B)[0] == 403
-        status, data = request(server, "/v1/quota/reserve", {"reservation_id": "r1", "account": "subscription", "amount": 1, "unit": "requests"})
+        status, data = request(server, "/v1/quota/reserve", {"reservation_id": "r1", "account": "subscription", "amount": 1, "unit": "requests", "minimum_remaining": 3})
         assert status == 200
         assert data["quota"]["reservation_id"] == "1:a:r1"
+        assert data["quota"]["minimum_remaining"] == 3
+        for invalid_floor in (True, False, -1, "2", None, 1e16, 0.0000000001, float("nan"), float("inf")):
+            assert request(server, "/v1/quota/reserve", {"reservation_id": "bad", "account": "subscription", "amount": 1, "minimum_remaining": invalid_floor})[0] == 400
         assert request(server, "/v1/quota/reserve", {"reservation_id": "r1", "account": "subscription", "amount": 1}, token=TOKEN_B)[0] == 403
         assert request(server, "/v1/quota/settle", {"reservation_id": "r1", "actual_amount": 1})[1]["quota"]["state"] == "SETTLED"
         # Supplied identifiers cannot escape the caller's namespace.
@@ -265,3 +268,30 @@ def test_same_client_different_targets_still_isolated(queue):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_http_real_ledger_atomic_floor_and_unknown_pool_block(queue, tmp_path):
+    # This optional subsystem is brought in by the quota PR. After integration
+    # this runs against the actual shared ledger, not an HTTP contract double.
+    ledger_module = pytest.importorskip("src.quota_ledger")
+    ledger = ledger_module.QuotaLedger(tmp_path / "floor-ledger.sqlite")
+    ledger.set_quota("subscription", 10, unit="requests")
+    with running_server(queue, ledger) as server:
+        def reserve(reservation_id, amount, minimum_remaining):
+            return request(server, "/v1/quota/reserve", {
+                "reservation_id": reservation_id, "account": "subscription",
+                "amount": amount, "unit": "requests", "minimum_remaining": minimum_remaining,
+            })
+        assert reserve("initial", 4, 6)[0] == 200
+        assert reserve("would-spend-floor", 1, 6)[0] == 409
+        assert reserve("initial", 4, 5)[0] == 409
+        assert request(server, "/v1/quota/unknown", {"reservation_id": "initial"})[0] == 200
+        assert reserve("unknown-must-block", 1, 0)[0] == 409
+        assert ledger.snapshot("subscription")["status"] == "blocked"
+        # Known usage reconciliation reopens the pool with six requests left.
+        assert request(server, "/v1/quota/settle", {"reservation_id": "initial", "actual_amount": 4})[0] == 200
+        with ThreadPoolExecutor(max_workers=8) as workers:
+            results = list(workers.map(lambda index: reserve(f"parallel-{index}", 1, 2)[0], range(8)))
+        assert results.count(200) == 4
+        assert results.count(409) == 4
+        assert ledger.snapshot("subscription")["available"] == 2

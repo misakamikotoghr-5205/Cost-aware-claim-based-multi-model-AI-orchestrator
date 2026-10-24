@@ -6,6 +6,7 @@ Put non-loopback deployments behind an authenticated private TLS transport.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
@@ -216,7 +217,7 @@ class CloudHandler(BaseHTTPRequestHandler):
         elif write and path in {"/v1/quota/reserve", "/v1/quota/settle", "/v1/quota/release", "/v1/quota/unknown", "/v1/quota/mark_unknown"}:
             operation = path.rsplit("/", 1)[1]
             if operation == "reserve":
-                self._fields(body, ("reservation_id", "account", "amount"), ("model", "unit"))
+                self._fields(body, ("reservation_id", "account", "amount"), ("model", "unit", "minimum_remaining"))
                 if body["account"] not in identity.accounts:
                     raise PermissionError()
             elif operation == "settle":
@@ -229,7 +230,17 @@ class CloudHandler(BaseHTTPRequestHandler):
             if len(reservation_id) > 256:
                 raise QueueError("client and reservation identifiers exceed ledger limit")
             if operation == "reserve":
-                result = ledger.reserve(reservation_id, body["account"], body["amount"], model=body.get("model", "*"), unit=body.get("unit"))
+                minimum = body.get("minimum_remaining", 0)
+                if isinstance(minimum, bool) or not isinstance(minimum, (int, float)):
+                    raise QueueError("minimum_remaining must be a finite nonnegative JSON number")
+                try:
+                    precise = Decimal(str(minimum))
+                    if (not precise.is_finite() or precise < 0 or precise > Decimal("1e15")
+                            or precise.as_tuple().exponent < -9):
+                        raise InvalidOperation
+                except InvalidOperation as exc:
+                    raise QueueError("minimum_remaining must be finite, nonnegative, <= 1e15, with <= 9 decimal places") from exc
+                result = ledger.reserve(reservation_id, body["account"], body["amount"], model=body.get("model", "*"), unit=body.get("unit"), minimum_remaining=minimum)
             else:
                 reservation = ledger.get_reservation(reservation_id)
                 if reservation["account"] not in identity.accounts:
