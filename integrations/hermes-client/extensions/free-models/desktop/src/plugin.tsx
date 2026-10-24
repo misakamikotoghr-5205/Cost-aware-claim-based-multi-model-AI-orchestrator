@@ -38,6 +38,9 @@ export function DiscoveryPage({ ctx }: { ctx: PluginContext }) {
         const saved = await api<DiscoverySettings>('/settings', { method: 'PUT', body: settings })
         if (current === generation.current) { setSettings(saved); setResult('发现源设置已保存。') }
       } else {
+        // The explicit refresh uses the sources currently visible in the form.
+        // A user who just disabled a source must not still query its old value.
+        await api('/settings', { method: 'PUT', body: settings })
         const response = kind === 'refresh'
           ? await api<{ models: ModelInfo[]; events: unknown[]; errors?: unknown[] }>('/refresh', { method: 'POST', body: {} })
           : await api<{ models: ModelInfo[]; events: unknown[]; errors?: unknown[] }>('/import', { method: 'POST', body: {

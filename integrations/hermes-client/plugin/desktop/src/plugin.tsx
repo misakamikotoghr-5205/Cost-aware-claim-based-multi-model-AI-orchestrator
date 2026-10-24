@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 interface NodeInfo { owner_id: string; node_id: string; label: string; online: boolean; last_seen_at: number;
   capabilities: { platform?: string; tools?: string[]; skills?: string[]; workspace_aliases?: string[]; max_actions?: number } }
 interface ExtensionInfo { id: string; version?: string; installed?: boolean; enabled?: boolean }
-interface Settings { enabled?: boolean; server?: { url?: string; token_env?: string; allow_http?: boolean }; node?: {
+interface Settings { enabled?: boolean; fleet_tools?: { enabled?: boolean; allowed_tools?: string[]; max_actions?: number }; server?: { url?: string; token_env?: string; allow_http?: boolean }; node?: {
   owner_id?: string; node_id?: string; workspaces?: Record<string, string>; runtime?: Record<string, unknown> }; [key: string]: unknown }
 const CSS = `.orch-page{padding:24px;display:grid;align-content:start;gap:24px;color:var(--ui-text-primary);max-width:980px;margin:0 auto;overflow:auto;height:100%}.orch-page h1{font-size:20px;margin:0}.orch-page h2{font-size:15px;margin:0}.orch-page p{font-size:12px;color:var(--ui-text-secondary);margin:0}.orch-section{display:grid;gap:12px}.orch-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.orch-field{display:grid;gap:6px;font-size:12px;flex:1;min-width:200px}.orch-node{display:grid;gap:6px;border-bottom:1px solid var(--ui-stroke-tertiary);padding:10px 0}.orch-pre{white-space:pre-wrap;word-break:break-word;color:var(--ui-text-secondary);font-size:12px}.orch-page textarea{min-height:100px}.orch-node[aria-selected=true]{color:var(--ui-accent)}`
 
@@ -90,6 +90,10 @@ export function ClientPage({ ctx }: { ctx: PluginContext }) {
       <label className="orch-field">本机 default 工作区绝对路径<Input value={settings.node?.workspaces?.default || ''} onChange={event => setSettings(value => ({ ...value, node: { ...value?.node, workspaces: { ...value?.node?.workspaces, default: event.target.value } } }))} /></label></div>
       <div className="orch-row"><span>启用本机评分路由</span><Switch aria-label="启用本机评分路由" checked={settings.enabled === true} onCheckedChange={enabled => setSettings(value => ({ ...value, enabled }))} />
       <Button size="sm" disabled={busy} onClick={() => perform(async () => { const saved = await api<Settings>('/settings', { method: 'PUT', body: settings }); setSettings(saved); setConfigText(JSON.stringify(saved, null, 2)); setOutput('本机代理连接设置已保存') })}>保存连接设置</Button></div>
+      <div className="orch-row"><span>允许云端 Agent 调度已配对节点</span><Switch aria-label="允许 Agent 调度节点" checked={settings.fleet_tools?.enabled === true} onCheckedChange={enabled => setSettings(value => ({ ...value, fleet_tools: { ...value?.fleet_tools, enabled } }))} /></div>
+      <div className="orch-row"><label className="orch-field">Agent 可申请的工具（逗号分隔）<Input value={settings.fleet_tools?.allowed_tools?.join(', ') || ''} onChange={event => setSettings(value => ({ ...value, fleet_tools: { ...value?.fleet_tools, allowed_tools: event.target.value.split(',').map(item => item.trim()).filter(Boolean) } }))} /></label>
+      <label className="orch-field">Agent 最大动作数<Input type="number" min={1} max={1000} value={settings.fleet_tools?.max_actions ?? 20} onChange={event => setSettings(value => ({ ...value, fleet_tools: { ...value?.fleet_tools, max_actions: Number(event.target.value) } }))} /></label></div>
+      <p>修改上方调度授权后请保存连接设置。节点工具与工作区限制继续生效；提交和取消仍经过原生授权。默认不向 Agent 开放节点调度。</p>
       <p>本地路径只发送到上方指定的本机 profile。远程节点的真实路径由各节点自己配置，云端任务只携带工作区别名。</p>
     </section>}
     <section className="orch-section"><h2>本地节点</h2>
@@ -110,6 +114,7 @@ export function ClientPage({ ctx }: { ctx: PluginContext }) {
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => perform(async () => { setWorker(JSON.stringify(await api('/worker/start', { method: 'POST', body: {} }), null, 2)) })}>启动本机任务接收</Button>
         <Button size="sm" variant="secondary" disabled={busy} onClick={() => perform(async () => { setWorker(JSON.stringify(await api('/worker/stop', { method: 'POST', body: {} }), null, 2)) })}>停止接收新任务</Button>
         <Button size="sm" variant="ghost" disabled={busy} onClick={() => perform(async () => { setWorker(JSON.stringify(await api('/node/run_once', { method: 'POST', body: {} }), null, 2)) })}>领取执行一次</Button></div>
+      <p>停止接收不会撤销已经开始的操作。修改节点绑定或工作区前，请读取状态并等待 running=false。</p>
       {worker && <pre className="orch-pre">{worker}</pre>}
     </section>
     <section className="orch-section"><h2>向指定节点下发任务</h2>

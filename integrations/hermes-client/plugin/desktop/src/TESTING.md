@@ -16,7 +16,8 @@ The interaction tests cover:
 - Model installation only after the explicit download gesture and confirmed job progress.
 - Native screen crops and preview-image drag crops, including pixel scaling.
 - Multiple intent choices, draft preview and insertion into the exact native composer.
-- No screenshot upload, automatic submit, or stale response after a new selection.
+- No screenshot upload during candidate generation; image attachment requires a checked consent control, final confirmation and a successful native ACK.
+- Pasted region text accompanies text-only drafts; there is no automatic submit or stale response after a new selection.
 - Connection changes refusing insertion into a different conversation owner.
 
 SDK primitives are presentation mocks in these interaction tests. Production source

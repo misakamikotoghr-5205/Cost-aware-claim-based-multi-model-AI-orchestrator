@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cropRegion, imagePoint, RevisionGate, sameScope } from './selection'
 import { localApi } from '../../../../plugin/desktop/src/local-api'
-const mocks = vi.hoisted(() => ({ insert: vi.fn(async () => true), submit: vi.fn(), profile: 'default', connection: 'cloud', session: 'chat-one' }))
+const mocks = vi.hoisted(() => ({ insert: vi.fn(async () => true), submit: vi.fn(), attach: vi.fn(async () => true), profile: 'default', connection: 'cloud', session: 'chat-one' }))
 vi.mock('@hermes/plugin-sdk', async () => {
   const React = await import('react')
   return { Button: ({ variant, size, children, ...props }: any) => React.createElement('button', props, children),
@@ -16,7 +16,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
       focusedStoredSessionId: { get: () => mocks.session }, focusedSessionId: { get: () => mocks.session },
       focusedSessionProfile: { get: () => mocks.profile }, connectionId: { get: () => mocks.connection },
       focusedSessionOwner: { get: () => ({ connectionId: mocks.connection, profile: mocks.profile }) }
-    }, composer: { insertText: mocks.insert, submit: mocks.submit }, revealPane: vi.fn() } }
+    }, composer: { insertText: mocks.insert, submit: mocks.submit, attachImages: mocks.attach }, revealPane: vi.fn() } }
 })
 import { PointerPane } from './plugin'
 import { ClientPage } from '../../../../plugin/desktop/src/plugin'
@@ -24,7 +24,7 @@ import { JudgeSettingsPage } from '../../../local-judge/desktop/src/plugin'
 const ctx = { storage: { get: (_: string, fallback: unknown) => fallback }, rest: vi.fn() } as any
 const captured = { status: 'ok', imageDataUrl: 'data:image/png;base64,aGVsbG8=', width: 1000, height: 500 }
 beforeEach(() => {
-  mocks.insert.mockClear(); mocks.submit.mockClear(); mocks.connection = 'cloud'; mocks.profile = 'default'; mocks.session = 'chat-one'
+  mocks.insert.mockClear(); mocks.submit.mockClear(); mocks.attach.mockClear(); mocks.connection = 'cloud'; mocks.profile = 'default'; mocks.session = 'chat-one'
   Object.defineProperty(window, 'PointerEvent', { value: MouseEvent, configurable: true }); Element.prototype.setPointerCapture = vi.fn()
   vi.spyOn(HTMLImageElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, width: 200, height: 100, top: 0, left: 0, right: 200, bottom: 100, toJSON() {} })
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as any)
@@ -37,6 +37,7 @@ async function selectRegion() {
   fireEvent.pointerDown(target, { button: 0, clientX: 10, clientY: 10, pointerId: 1 })
   fireEvent.pointerMove(target, { clientX: 80, clientY: 50, pointerId: 1 }); fireEvent.pointerUp(target, { clientX: 80, clientY: 50, pointerId: 1 })
   expect(await screen.findByAltText('已圈选区域预览')).toBeTruthy()
+  fireEvent.change(screen.getByLabelText('选区原文 / 表格数据（可粘贴）'), { target: { value: '原文示例' } })
 }
 it('machine operations stay local while active chat is cloud; unavailable bridge fails closed', async () => {
   const api = vi.fn(async () => ({ online: true })); (window as any).hermesDesktop = { api }
@@ -60,8 +61,8 @@ it('capture -> crop -> multiple choices -> preview -> exact composer draft, with
   render(createElement(PointerPane, { ctx })); await selectRegion(); fireEvent.click(screen.getByText('生成多个候选'))
   fireEvent.click(await screen.findByText('整理段落 — 整理文档')); await screen.findByText('聊天草稿预览')
   expect(mocks.insert).not.toHaveBeenCalled(); fireEvent.click(screen.getByText('确认加入聊天草稿'))
-  await waitFor(() => expect(mocks.insert).toHaveBeenCalledWith('chat-one', '请整理选中的段落，先给出修改建议。', { mode: 'block' }))
-  expect(mocks.submit).not.toHaveBeenCalled(); expect(JSON.stringify(api.mock.calls)).not.toContain('base64')
+  await waitFor(() => expect(mocks.insert).toHaveBeenCalledWith('chat-one', '请整理选中的段落，先给出修改建议。\n\n选区原文 / 表格数据：\n原文示例', { mode: 'block' }))
+  expect(mocks.submit).not.toHaveBeenCalled(); expect(mocks.attach).not.toHaveBeenCalled(); expect(JSON.stringify(api.mock.calls)).not.toContain('base64')
   expect(api.mock.calls[0][0].body.context.region).toEqual({ x: 50, y: 50, width: 350, height: 200 })
 })
 it('late candidates do not replace a new crop; switching connection blocks insertion', async () => {
@@ -73,6 +74,7 @@ it('late candidates do not replace a new crop; switching connection blocks inser
   fireEvent.pointerDown(image, { button: 0, clientX: 40, clientY: 20 }); fireEvent.pointerUp(image, { clientX: 100, clientY: 90 })
   await act(async () => resolveCandidates({ session_id: 'old', revision: 1, candidates: [{ action_id: 'old', label: '旧区域候选', description: '不应出现' }] }))
   expect(screen.queryByText('旧区域候选 — 不应出现')).toBeNull()
+  fireEvent.change(screen.getByLabelText('选区原文 / 表格数据（可粘贴）'), { target: { value: '新选区原文' } })
   api.mockImplementation(async (request: any) => request.path.endsWith('/sessions') ? { session_id: 'new', revision: 2, candidates: [{ action_id: 'new', label: '新候选', description: '有效', preview_prompt: 'new draft' }] } : { executed: false, draft_prompt: 'new draft' })
   fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('新候选 — 有效')); await screen.findByText('确认加入聊天草稿')
   mocks.connection = 'another-cloud'; fireEvent.click(screen.getByText('确认加入聊天草稿'))
@@ -137,4 +139,25 @@ it('keyword edits discard preview, disable old actions and send only the new del
   expect(api.mock.calls.find(([request]) => request.path.endsWith('/refine'))![0].body.keywords).toBe('摘要')
   await waitFor(() => expect((screen.getByLabelText('关键词') as HTMLInputElement).value).toBe(''))
   expect(mocks.insert).not.toHaveBeenCalled(); expect(mocks.submit).not.toHaveBeenCalled()
+})
+it('cropped image attachment requires an explicit checkbox and final confirmation; failed ACK never claims success', async () => {
+  const api = vi.fn(async (request: any) => request.path.endsWith('/sessions')
+    ? { session_id: 'image', revision: 1, candidates: [{ action_id: 'inspect', label: '解释', description: '解释图片', preview_prompt: '请解释图片' }] }
+    : { executed: false, draft_prompt: '请解释图片' })
+  ;(window as any).hermesDesktop = { api, regionCapture: { capture: async () => ({ ...captured, region_already_cropped: true, selectionMode: 'screen-region' }) } }
+  render(createElement(PointerPane, { ctx })); fireEvent.click(screen.getByText('开始圈选')); await screen.findByAltText('已圈选区域预览')
+  fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('解释 — 解释图片'))
+  expect((screen.getByText('确认加入聊天草稿') as HTMLButtonElement).disabled).toBe(true)
+  expect(mocks.attach).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByLabelText('附上所选区域图片'))
+  mocks.attach.mockResolvedValueOnce(false)
+  fireEvent.click(screen.getByText('确认加入聊天草稿'))
+  await waitFor(() => expect(mocks.attach).toHaveBeenCalledTimes(1)); expect(mocks.insert).not.toHaveBeenCalled()
+  expect(await screen.findByRole('alert')).toBeTruthy()
+  expect(screen.queryByText('草稿和所选区域图片已加入原生聊天。请检查后在聊天中发送。')).toBeNull()
+  fireEvent.click(screen.getByText('确认加入聊天草稿'))
+  await waitFor(() => expect(mocks.insert).toHaveBeenCalledWith('chat-one', '请解释图片', { mode: 'block' }))
+  const [target, images] = mocks.attach.mock.calls[1] as unknown as [string, Blob[]]
+  expect(target).toBe('chat-one'); expect(images).toHaveLength(1); expect(images[0].type).toBe('image/png')
+  expect(mocks.submit).not.toHaveBeenCalled()
 })

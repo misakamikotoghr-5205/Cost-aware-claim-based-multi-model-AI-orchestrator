@@ -24,6 +24,8 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
   const [crop, setCrop] = useState('')
   const [kind, setKind] = useState<Kind>('auto')
   const [keywords, setKeywords] = useState('')
+  const [selectedText, setSelectedText] = useState('')
+  const [attachImage, setAttachImage] = useState(false)
   const [session, setSession] = useState<IntentSession | null>(null)
   const [draft, setDraft] = useState('')
   const [selectedAction, setSelectedAction] = useState('')
@@ -36,6 +38,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
   const dragging = useRef(false)
   const gate = useRef(new RevisionGate())
   const address = useRef<ComposerScope | null>(null)
+  const attached = useRef<{ image: string; scope: ComposerScope } | null>(null)
   useEffect(() => () => { gate.current.next() }, [])
 
   function invalidate() { gate.current.next(); setSession(null); setDraft(''); setSelectedAction(''); setDirty(false); setBusy(false); setError(''); setNotice('') }
@@ -60,7 +63,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
   }
 
   async function beginCapture() {
-    invalidate(); setCapture(null); setCrop(''); setRegion(null)
+    invalidate(); setCapture(null); setCrop(''); setRegion(null); setAttachImage(false); setSelectedText(''); attached.current = null
     const generation = gate.current.next()
     address.current = scope()
     const bridge = (window as unknown as { hermesDesktop?: { regionCapture?: NativeCapture } }).hermesDesktop?.regionCapture
@@ -85,7 +88,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
   }
   function pointerDown(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0 || !capture) return
-    invalidate(); setRegion(null); setCrop(''); start.current = point(event); dragging.current = true
+    invalidate(); setRegion(null); setCrop(''); setAttachImage(false); setSelectedText(''); attached.current = null; start.current = point(event); dragging.current = true
     event.currentTarget.setPointerCapture(event.pointerId)
   }
   function pointerMove(event: PointerEvent<HTMLDivElement>) {
@@ -122,11 +125,11 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
 
   function choose(candidate: Candidate) {
     if (busy || dirty) return
-    setSelectedAction(candidate.action_id); setDraft(candidate.preview_prompt); setError(''); setNotice('')
+    setSelectedAction(candidate.action_id); setDraft(candidate.preview_prompt + (selectedText.trim() ? '\n\n选区原文 / 表格数据：\n' + selectedText.trim() : '')); setError(''); setNotice('')
   }
 
   async function insertDraft() {
-    if (!draft || !address.current || !session || !selectedAction || dirty) return
+    if (!draft || !address.current || !session || !selectedAction || dirty || (!attachImage && !selectedText.trim())) return
     if (!sameScope(address.current, scope())) { setError('聊天或连接已切换，请返回开始圈选时的聊天后再添加草稿。'); return }
     const generation = gate.current.next(); setBusy(true); setError('')
     try {
@@ -135,18 +138,29 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
       if (!gate.current.accepts(generation)) return
       if (committed.executed !== false || typeof committed.draft_prompt !== 'string') throw new Error('候选没有返回可确认的草稿。')
       if (!sameScope(address.current, scope())) throw new Error('聊天或连接已切换，请返回原聊天后再添加草稿。')
+      if (attachImage && crop && (!attached.current || attached.current.image !== crop || !sameScope(attached.current.scope, address.current))) {
+        const attach = host.composer.attachImages
+        if (typeof attach !== 'function') throw new Error('当前 Hermes 版本不支持向草稿添加图片。请更新，或粘贴选区原文。')
+        const bytes = Uint8Array.from(atob(crop.slice(crop.indexOf(',') + 1)), char => char.charCodeAt(0))
+        if (bytes.byteLength > 8 * 1024 * 1024) throw new Error('选区图片超过 8 MiB，请缩小圈选区域。')
+        const accepted = await attach(address.current.sessionId, [new Blob([bytes], { type: 'image/png' })])
+        if (!accepted) throw new Error('图片未加入原生草稿，未报告附图成功。请重试或改为粘贴原文。')
+        if (!gate.current.accepts(generation) || !sameScope(address.current, scope())) return
+        attached.current = { image: crop, scope: { ...address.current } }
+      }
+      if (!gate.current.accepts(generation) || !sameScope(address.current, scope())) return
       const inserted = await host.composer.insertText(address.current.sessionId, draft, { mode: 'block' })
       if (!inserted) setError('当前聊天输入框未就绪，草稿仍保留在此处。')
-      else setNotice('草稿已加入原生聊天输入框。请检查后在聊天中发送。')
+      else { setNotice(attachImage ? '草稿和所选区域图片已加入原生聊天。请检查后在聊天中发送。' : '含选区原文的草稿已加入原生聊天。请检查后发送。'); setSession(null); setDraft(''); setSelectedAction(''); setAttachImage(false); attached.current = null }
     } catch (failure) { if (gate.current.accepts(generation)) setError(String(failure)) }
     finally { if (gate.current.accepts(generation)) setBusy(false) }
   }
 
   return <section className="pointer-pane" aria-label="智能指针"><style>{CSS}</style>
     <div className="pointer-row"><strong>智能指针</strong><Button size="sm" onClick={beginCapture} disabled={busy}>开始圈选</Button>
-      <Button size="sm" variant="ghost" onClick={() => { invalidate(); setCapture(null); setRegion(null); setCrop('') }}>清除</Button></div>
+      <Button size="sm" variant="ghost" onClick={() => { invalidate(); setCapture(null); setRegion(null); setCrop(''); setSelectedText(''); setAttachImage(false); attached.current = null; address.current = null }}>清除</Button></div>
     <label className="pointer-label">本机代理 profile<Input value={profileInput} onChange={event => setProfileInput(event.target.value)} /></label>
-    <Button size="sm" variant="secondary" disabled={busy || !profileInput.trim()} onClick={() => { try { localApi(profileInput.trim()); ctx.storage.set('local-profile', profileInput.trim()); setLocalProfile(profileInput.trim()); invalidate(); setCapture(null); setCrop(''); setRegion(null) } catch (failure) { setError(String(failure)) } }}>连接此本机代理</Button>
+    <Button size="sm" variant="secondary" disabled={busy || !profileInput.trim()} onClick={() => { try { localApi(profileInput.trim()); ctx.storage.set('local-profile', profileInput.trim()); setLocalProfile(profileInput.trim()); invalidate(); setCapture(null); setCrop(''); setRegion(null); setSelectedText(''); setAttachImage(false); attached.current = null; address.current = null } catch (failure) { setError(String(failure)) } }}>连接此本机代理</Button>
     <p>截图只保留在内存。请在图片内拖动圈选；候选只生成草稿，发送由你确认。</p>
     <details onToggle={event => { if (event.currentTarget.open) loadLocalSettings() }}><summary>本地意图建议（可选）</summary>
       <div className="pointer-row"><span>本机模型建议</span><Switch aria-label="启用本机意图建议" checked={localSettings.enabled} onCheckedChange={enabled => setLocalSettings(value => ({ ...value, enabled }))} /></div>
@@ -172,13 +186,16 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
     <div className="pointer-chips">{['整理', '检查', '翻译', '解释', '公式', '格式'].map(keyword => <Button key={keyword} variant="outline" size="xs"
       onClick={() => editKeywords([keywords, keyword].filter(Boolean).join(' '))}>{keyword}</Button>)}</div>
     <div className="pointer-row"><Button disabled={!region || busy} onClick={() => propose()}> {session ? '追加关键词 / 换一批' : '生成多个候选'} </Button></div>
+    <label className="pointer-label">选区原文 / 表格数据（可粘贴）<Textarea value={selectedText} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction(''); if (busy) setSession(null); setBusy(false) }} placeholder="不发送图片时，请在这里粘贴要处理的原文或表格内容。" /></label>
+    <div className="pointer-row"><Switch aria-label="附上所选区域图片" checked={attachImage} onCheckedChange={setAttachImage} /><span>附上所选区域图片（发送时使用当前会话模型）</span></div>
+    <p>图片默认不加入草稿。只有勾选并最终确认后才加入严格裁剪的选区；点击聊天发送后才由原生附件流程交给会话模型。</p>
     {session?.keywords && <p>累计关键词：{session.keywords}</p>}
     {dirty && session && <p>关键词已修改，请先追加生成新候选。</p>}
     {session?.question && <p role="status">{session.question}</p>}
     {session && <div className="pointer-intents">{session.candidates.map(candidate => <Button key={candidate.action_id} variant={selectedAction === candidate.action_id ? 'default' : 'secondary'} aria-pressed={selectedAction === candidate.action_id} disabled={busy || dirty}
       onClick={() => choose(candidate)}>{candidate.label} — {candidate.description}</Button>)}</div>}
     {draft && <><label className="pointer-label">聊天草稿预览<Textarea value={draft} onChange={event => setDraft(event.target.value)} /></label>
-      <Button onClick={insertDraft} disabled={busy || dirty}>确认加入聊天草稿</Button><p>图片不会随草稿上传。需要视觉分析时，请在原生聊天中另行确认添加图片。</p></>}
+      <Button onClick={insertDraft} disabled={busy || dirty || (!attachImage && !selectedText.trim())}>确认加入聊天草稿</Button><p>请提供选区原文或明确勾选附图，确保会话模型能看到要处理的内容。此扩展不会自动发送聊天。</p></>}
     {notice && <p role="status">{notice}</p>}
     </>}
   </section>
