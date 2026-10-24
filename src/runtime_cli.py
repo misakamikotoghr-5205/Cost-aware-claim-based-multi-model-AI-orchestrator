@@ -467,32 +467,42 @@ def cloud_from_config(config):
 @contextmanager
 def _node_lock(path):
     """Kernel-owned lock survives reconnect but is released on process death."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as stream:
-        stream.seek(0)
-        if not stream.read(1):
-            stream.write(b"0")
-            stream.flush()
-        stream.seek(0)
+    stream = None
+    acquired = False
+    try:
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stream = path.open("a+b")
+            # Windows denies reads of another process's locked byte. Determine
+            # initialization from file length without touching byte zero.
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"0")
+                stream.flush()
+            stream.seek(0)
             if os.name == "nt":
                 import msvcrt
                 msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
                 fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
         except OSError:
-            raise RuntimeError("Another node process is using this receipt directory") from None
-        try:
-            yield
-        finally:
-            stream.seek(0)
-            if os.name == "nt":
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            raise RuntimeError("Another node process is using this receipt directory or its lock is unavailable") from None
+        yield
+    finally:
+        if stream is not None:
+            try:
+                if acquired:
+                    stream.seek(0)
+                    if os.name == "nt":
+                        import msvcrt
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            finally:
+                stream.close()
 
 
 def node_once(config, *, execute=False):
