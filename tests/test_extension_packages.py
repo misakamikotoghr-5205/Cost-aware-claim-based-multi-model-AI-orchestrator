@@ -301,3 +301,42 @@ def test_inventory_never_follows_nested_payload_symlink(tmp_path):
     (outside / "file.txt").write_text("original")
     folder.symlink_to(outside, target_is_directory=True)
     assert ep.inventory(manager.home)[0]["installed"] is False
+
+
+def test_runtime_setup_uses_official_windows_and_posix_entrypoints(tmp_path, monkeypatch):
+    commands = {'pwsh': '/tools/pwsh', 'powershell': '/tools/powershell', 'bash': '/bin/bash'}
+    monkeypatch.setattr(prep.shutil, 'which', commands.get)
+    assert prep.runtime_setup_command(tmp_path, windows=False) == ['/bin/bash', str(tmp_path / 'setup-hermes.sh'), '--runtime-only']
+    assert prep.runtime_setup_command(tmp_path, windows=True) == [
+        '/tools/pwsh', '-NoLogo', '-NoProfile', '-NonInteractive', '-File', str(tmp_path / 'setup-hermes.ps1'), '-RuntimeOnly']
+
+
+def test_runtime_environment_isolates_home_and_store_and_preserves_network(tmp_path, monkeypatch):
+    monkeypatch.setenv('PYTHONPATH', '/unrelated/source')
+    monkeypatch.setenv('PYTHONHOME', '/unrelated/python')
+    monkeypatch.setenv('VIRTUAL_ENV', '/unrelated/venv')
+    monkeypatch.setenv('HTTPS_PROXY', 'http://test-proxy.invalid:8080')
+    env = prep.runtime_environment(tmp_path / 'chosen-home')
+    assert env['HERMES_HOME'] == str(tmp_path / 'chosen-home')
+    assert env['HERMES_RUNTIME_DIR'] == str(tmp_path / 'chosen-home/tools')
+    assert all(name not in env for name in ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV'])
+    assert env['HTTPS_PROXY'] == 'http://test-proxy.invalid:8080'
+
+
+def test_runtime_bootstrap_is_default_and_skip_still_probes_actual_resolver(tmp_path, monkeypatch):
+    monkeypatch.setattr(prep.shutil, 'which', lambda name: '/tools/' + name)
+    calls = []
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return json.dumps({'ready': True, 'kind': 'command', 'root': str(tmp_path), 'launcher': 'native-hermes'})
+    monkeypatch.setattr(prep, 'run', run)
+    assert prep.prepare_runtime(tmp_path, tmp_path / 'home')['ready'] is True
+    assert calls[0][0][-1] == '--runtime-only'
+    assert calls[0][1]['env']['HERMES_HOME'] == str(tmp_path / 'home')
+    assert calls[1][0][1].endswith('probe_native_backend.mjs')
+    calls.clear()
+    prep.prepare_runtime(tmp_path, tmp_path / 'home', skip_runtime=True)
+    assert len(calls) == 1 and calls[0][0][1].endswith('probe_native_backend.mjs')
+    monkeypatch.setattr(prep, 'run', lambda *a, **k: json.dumps({'ready': False, 'root': str(tmp_path)}))
+    with pytest.raises(ep.ExtensionError, match='readiness'):
+        prep.prepare_runtime(tmp_path, tmp_path / 'home', skip_runtime=True)
