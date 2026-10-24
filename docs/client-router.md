@@ -88,7 +88,10 @@ Subscriptions retain at least 20% headroom by default, or the larger reserve in
 the existing registry. Strong models (a capability at least 0.85) retain at least
 30% for trivial/normal tasks; important and critical tasks may use that additional
 headroom while retaining the subscription minimum. These values are configurable
-in `RoutingPolicy`.
+in `RoutingPolicy`. `receipt.reserve_fractions[model_id]` exposes the effective
+reserve for the selected task, so the integrated Runtime can enforce the same
+floor during the atomic reservation; a prior snapshot check alone cannot protect
+that floor when two clients reserve concurrently.
 
 Among models within 0.15 of the top existing score, the router prefers the first
 quota to expire or reset within 24 hours. It does not send an unsuitable low-score

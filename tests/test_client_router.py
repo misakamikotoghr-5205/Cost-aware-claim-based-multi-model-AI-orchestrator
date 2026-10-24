@@ -152,7 +152,11 @@ class ClientRouterTests(unittest.TestCase):
         quota = {candidate.model_id: snapshot(available=25)}
         self.assertIsNone(self.route([candidate], quota_states=quota).selected)
         important = replace(self.task, value_level="important")
-        self.assertIsNotNone(self.router.route(important, [candidate], quota_states=quota, now=NOW).selected)
+        important_receipt = self.router.route(important, [candidate], quota_states=quota, now=NOW)
+        self.assertIsNotNone(important_receipt.selected)
+        self.assertEqual(important_receipt.reserve_fractions[candidate.model_id], 0.2)
+        normal_receipt = self.route([candidate], quota_states={candidate.model_id: snapshot(available=80)})
+        self.assertEqual(normal_receipt.to_dict()["reserve_fractions"][candidate.model_id], 0.3)
 
     def test_expiry_priority_is_bounded_by_existing_score(self):
         free = card("free-expiring", billing_mode="free", quota_remaining=1, expires_at=NOW + 60)

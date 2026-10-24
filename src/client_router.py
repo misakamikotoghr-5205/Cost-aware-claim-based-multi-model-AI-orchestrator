@@ -91,6 +91,7 @@ class RouteReceipt:
     selected: ModelCard | None = None
     candidates: list[ModelCard] = field(default_factory=list)
     ranking: list[ScoreBreakdown] = field(default_factory=list)
+    reserve_fractions: dict[str, float] = field(default_factory=dict)
     rejected: dict[str, list[str]] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
@@ -100,6 +101,7 @@ class RouteReceipt:
             "selected": self.selected.to_dict() if self.selected else None,
             "candidates": [card.to_dict() for card in self.candidates],
             "ranking": [asdict(score) for score in self.ranking],
+            "reserve_fractions": self.reserve_fractions,
             "rejected": self.rejected,
             "notes": self.notes,
         }
@@ -243,6 +245,7 @@ class ClientRouter:
             quota={"policy": {}, "quota_status": {}},
         )
         for model_id, (card, fraction, reserve) in live.items():
+            receipt.reserve_fractions[model_id] = reserve
             tier = "expensive" if card.billing_mode in {"subscription", "paid_api"} and self._strong(card) else "mid"
             dynamic.capabilities["agents"][model_id] = {"capabilities": dict(card.capabilities), "tier": tier}
             price = {"local": 0.0, "free": 0.0, "subscription": 0.3, "paid_api": 1.0}[card.billing_mode]
