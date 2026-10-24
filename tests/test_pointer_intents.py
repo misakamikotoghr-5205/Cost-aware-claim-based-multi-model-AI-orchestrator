@@ -298,7 +298,7 @@ def test_native_register_is_inert_and_declares_no_tools():
         def __getattr__(self, name):
             raise AssertionError("register must not register or execute capabilities")
     assert module.register(NoCapabilities()) is None
-    manifest = json.loads((directory / "dashboard/manifest.json").read_text())
+    manifest = json.loads((directory / "dashboard/manifest.json").read_text(encoding="utf-8"))
     assert manifest["name"] == "smart-pointer" and manifest["api"] == "plugin_api.py"
 
 
