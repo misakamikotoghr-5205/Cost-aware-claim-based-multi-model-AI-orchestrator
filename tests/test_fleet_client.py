@@ -87,6 +87,30 @@ def test_fleet_requests_preserve_explicit_target_and_stable_id(monkeypatch):
     assert seen[-1][0] == "/v1/nodes/node%2Fa/revoke"
 
 
+def test_same_node_cannot_process_two_claims_concurrently(tmp_path, monkeypatch):
+    from threading import Event, Thread
+    import src.fleet_client as module
+    started, finish = Event(), Event()
+    calls = []
+    def blocked(config, token):
+        calls.append(token)
+        started.set()
+        finish.wait(timeout=5)
+        return {"status": "idle"}
+    monkeypatch.setattr(module, "_fleet_node_once", blocked)
+    config = node_config(tmp_path)
+    worker = Thread(target=lambda: module.fleet_node_once(config, "first"))
+    worker.start()
+    assert started.wait(timeout=5)
+    try:
+        with pytest.raises(ValueError, match="Another node process"):
+            module.fleet_node_once(config, "second")
+    finally:
+        finish.set()
+        worker.join(timeout=5)
+    assert calls == ["first"]
+
+
 def test_real_cloud_pairs_two_nodes_executes_and_reconciles_lost_completion(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from contextlib import ExitStack, contextmanager
