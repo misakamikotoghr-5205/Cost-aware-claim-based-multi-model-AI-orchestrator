@@ -219,14 +219,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         spec = json.loads((ROOT / "integrations/hermes-client/upstream.json").read_text())
+        print("MISAKA: preparing the pinned native source and patches", file=sys.stderr, flush=True)
         checkout = prepare_checkout(spec=spec, cache_dir=args.cache_dir, upstream=args.upstream,
                                     patch_dir=ROOT / "integrations/hermes-client/patches")
         # SDK compilation and the real resolver probe both consume locked JS dependencies.
+        print("MISAKA: preparing locked desktop dependencies", file=sys.stderr, flush=True)
         install_js_dependencies(checkout, skip_deps=args.skip_deps)
         initialized = initialize_profile(args.hermes_home)
+        print("MISAKA: preparing the official runtime and probing its launcher", file=sys.stderr, flush=True)
         runtime = prepare_runtime(checkout, args.hermes_home, skip_runtime=args.skip_runtime)
         if args.build:
+            print("MISAKA: building the native desktop", file=sys.stderr, flush=True)
             build_native(checkout, skip_deps=True)
+        print("MISAKA: packaging and installing core; optional packages remain separate", file=sys.stderr, flush=True)
         core = build_one(spec["core_id"], output_dir=args.packages_dir, upstream=checkout)
         installed = ExtensionManager(args.hermes_home, hermes_commit=spec["commit"]).install(core["archive"], replace=True)
         print(json.dumps({"checkout": str(checkout), "core": installed,
@@ -239,6 +244,7 @@ def main(argv=None):
                 raise ExtensionError("npm is not installed")
             env = runtime_environment(args.hermes_home)
             env["HERMES_DESKTOP_HERMES_ROOT"] = str(checkout)
+            env["HERMES_DESKTOP_HERMES"] = runtime["launcher"]
             subprocess.run([npm, "--workspace", "apps/desktop", "run", "start"], cwd=checkout, env=env, check=True)
         return 0
     except (ExtensionError, OSError, subprocess.SubprocessError, ValueError) as exc:
