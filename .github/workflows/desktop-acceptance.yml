@@ -52,6 +52,7 @@ jobs:
       - name: Validate native acceptance scripts
         run: |
           node --check scripts/acceptance/native-desktop.mjs
+          node --check scripts/acceptance/misaka-final.mjs
           node --check scripts/acceptance/capture-environment.mjs
           node --check scripts/probe_native_backend.mjs
       - name: Locate public npm content cache
@@ -82,10 +83,17 @@ jobs:
         with:
           path: ${{ steps.npm-cache-location.outputs.path }}
           key: windows-native-public-npm-node24-${{ hashFiles('integrations/hermes-client/upstream.json') }}
+      - name: Install actual pointer ZIP and exercise extracted Agent Skill against the same runtime
+        timeout-minutes: 10
+        run: |
+          & scripts/acceptance/windows-package-and-skill.ps1 -Repository $PWD -Source "${{ steps.native-preparation.outputs.source }}" -Launcher "${{ steps.native-preparation.outputs.launcher }}" -ProfileDirectory "$env:RUNNER_TEMP/native-profile" -OutputDirectory (Join-Path $PWD 'acceptance-results')
       - name: Actual Electron launch, native capture and screenshots
         timeout-minutes: 8
         run: |
           node scripts/acceptance/native-desktop.mjs --upstream "${{ steps.native-preparation.outputs.source }}" --native-launcher "${{ steps.native-preparation.outputs.launcher }}" --hermes-home "$env:RUNNER_TEMP/native-profile" --output acceptance-results
+      - name: Verify the confirmed draft never submitted a native message
+        run: |
+          python scripts/acceptance/verify-unsent-draft.py --profile-home "$env:RUNNER_TEMP/native-profile" --report acceptance-results/unsent-draft-db-report.json
       - name: Upload only screenshots and redacted acceptance report
         if: always()
         uses: actions/upload-artifact@v4

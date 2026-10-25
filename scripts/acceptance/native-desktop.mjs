@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
+import { auditNativeCapture, provenance, verifyBrand, verifyCompact } from './misaka-final.mjs'
 
 const { values } = parseArgs({ options: {
   upstream: { type: 'string' }, 'hermes-home': { type: 'string' }, output: { type: 'string' },
@@ -55,6 +56,7 @@ const report = {
 }
 let application
 let nativeDialogProcess
+let captureAudit
 function checkpoint(phase) {
   report.phase = phase
   writeFileSync(join(output, 'native-desktop-report.json'), JSON.stringify(report, null, 2))
@@ -69,6 +71,8 @@ function bounded(promise, timeoutMs, label) {
 }
 const redact = value => String(value).replace(/([?&](?:token|ticket|key)=)[^&\s]+/gi, '$1<redacted>').slice(0, 2000)
 try {
+  checkpoint('fingerprinting_actual_native_build')
+  report.provenance = provenance(upstream, resolve(ownDirectory, '../..'))
   if (process.platform === 'win32') {
     checkpoint('probing_real_windows_capture_environment')
     report.screen_api_diagnostics = []
@@ -114,6 +118,8 @@ try {
   report.checks.push('Real native Electron renderer booted with isolated no-account profile')
   assert(await page.evaluate(() => typeof window.hermesDesktop?.regionCapture?.capture === 'function'))
   report.checks.push('Patched native region-capture capability exposed by actual preload')
+  report.identity = await verifyBrand(application, page)
+  report.checks.push('Actual application name and native owner title equal MISAKA AGENT; upstream update gates protect this build')
 
   const chooseLater = page.getByRole('button', { name: "I'll choose a provider later", exact: true })
   await chooseLater.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {})
@@ -137,6 +143,7 @@ try {
   report.screenshots.push('03-windows-native-settings.png')
   report.checks.push('Native settings opened through its actual control')
   await page.getByRole('button', { name: 'Close settings', exact: true }).click()
+  captureAudit = await auditNativeCapture(application)
 
   if (process.platform === 'win32') {
     checkpoint('opening_actual_native_screen_dialog')
@@ -201,6 +208,12 @@ try {
     report.capture = { status: result.status, selectionMode: result.selectionMode, width: result.width, height: result.height, nativeDialogInvoked: true, wholeScreenReturned: false }
     report.checks.push('Actual Windows screen consent, native overlay drag and strict PNG crop passed')
   }
+  checkpoint('verifying_actual_installed_compact_pointer')
+  report.compact = await verifyCompact(application, page, output, report.identity.owner_id)
+  report.screenshots.push('06-misaka-empty-compact.png', '07-misaka-compact-native-drag.png',
+    '08-misaka-compact-cropped-region.png', '09-misaka-document-candidates.png',
+    '10-misaka-review-and-image-consent.png', '11-misaka-restored-chat-draft.png')
+  report.checks.push('Installed native compact pointer opens at the top right, hides its owner, captures a real region, refines candidates and hands off an unsent draft with one image; close and Escape restore the owner')
   report.result = 'passed'
 } catch (error) {
   report.result = 'failed'
@@ -210,6 +223,14 @@ try {
 } finally {
   checkpoint('closing_actual_native_application')
   if (nativeDialogProcess && nativeDialogProcess.exitCode === null) nativeDialogProcess.kill()
+  if (captureAudit) {
+    report.native_capture_audit = await captureAudit.stop()
+    if (!report.native_capture_audit.main_process_responsive && report.result === 'passed') {
+      report.result = 'failed'
+      report.error = 'The actual native main process did not respond after the acceptance flow'
+      process.exitCode = 1
+    }
+  }
   if (application) {
     try {
       const page = application.windows()[0]
