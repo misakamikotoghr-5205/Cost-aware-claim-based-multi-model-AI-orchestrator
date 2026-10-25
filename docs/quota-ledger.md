@@ -106,7 +106,13 @@ OAuth credentials with official APIs. These are provider-specific desktop
 capabilities, not proof of a portable headless export interface. A separate
 installed CLI version must be audited before adding its commands here.
 
-**Implemented now:** a read-only importer for a deliberately supplied sanitized
+This section describes the original `CCSwitchQuotaSource` interchange adapter.
+The integrated native Dashboard additionally reads supported official provider
+usage through local Hermes credentials; see `docs/quota-dashboard.md`. It does
+not read CC Switch's database, execute its usage scripts, or treat the internal
+cloud ledger as a provider subscription allowance.
+
+**Implemented in this interchange adapter:** a read-only importer for a deliberately supplied sanitized
 JSON file. **Not implemented or live-validated:** automatic CC Switch extraction,
 provider authentication, polling, or account entitlement checks. No real account
 data was queried during implementation.

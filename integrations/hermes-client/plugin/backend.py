@@ -32,6 +32,8 @@ _IMPORT_LOCK = threading.RLock()
 _WORKERS = {}
 _WORKER_LOCK = threading.RLock()
 _ONESHOTS = set()
+_QUOTA_DASHBOARDS = {}
+_QUOTA_DASHBOARD_LOCK = threading.RLock()
 
 
 def home() -> Path:
@@ -457,6 +459,44 @@ def _fleet(node=False):
 
 def nodes():
     return {"nodes": _fleet().nodes()}
+
+
+def _quota_dashboard():
+    profile_home = home()
+    with _QUOTA_DASHBOARD_LOCK:
+        key = str(profile_home)
+        if key not in _QUOTA_DASHBOARDS:
+            _QUOTA_DASHBOARDS[key] = embedded("quota_dashboard").QuotaDashboard(profile_home)
+        return _QUOTA_DASHBOARDS[key]
+
+
+def quota_dashboard():
+    value = _quota_dashboard().view()
+    cloud_module = Path(__file__).with_name("quota_cloud.py")
+    if cloud_module.is_file():
+        module = load_file(cloud_module, "quota_cloud")
+        if hasattr(module, "age_cloud_quota"):
+            value["cloud"] = module.age_cloud_quota(value["cloud"], time.time())
+    state = worker_status()
+    value["node"] = {key: state.get(key) for key in ("execution_location", "platform", "running")}
+    value["node"]["status"] = "running" if state.get("running") else "stopped"
+    return value
+
+
+def quota_refresh():
+    cloud_module = Path(__file__).with_name("quota_cloud.py")
+    cloud_reader = None
+    if cloud_module.is_file():
+        # The cloud component only reads the owner's existing ledger. It never
+        # receives model credentials and does not reserve or execute work.
+        cloud_reader = lambda: load_file(cloud_module, "quota_cloud").read_cloud_quota(sys.modules[__name__])
+    _quota_dashboard().refresh(cloud_reader=cloud_reader)
+    return quota_dashboard()
+
+
+def quota_import(body):
+    _quota_dashboard().import_file(body)
+    return quota_dashboard()
 
 
 def pairing(body):

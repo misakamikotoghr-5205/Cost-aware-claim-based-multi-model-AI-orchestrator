@@ -60,6 +60,21 @@ def get_nodes():
     return invoke(backend.nodes)
 
 
+@router.get("/quota/dashboard")
+def quota_dashboard():
+    return invoke(backend.quota_dashboard)
+
+
+@router.post("/quota/refresh")
+def quota_refresh():
+    return invoke(backend.quota_refresh)
+
+
+@router.post("/quota/import")
+def quota_import(body: dict):
+    return invoke(backend.quota_import, body)
+
+
 @router.post("/pairing")
 def pair(body: dict):
     return invoke(backend.pairing, body)

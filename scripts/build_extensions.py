@@ -18,7 +18,7 @@ from src.extension_packages import CORE_ID, ExtensionError, build_package
 CORE_MODULES = (
     "__init__.py", "registry.py", "scoring_engine.py", "task_card.py",
     "quota_manager.py", "client_router.py", "discovery.py", "executors.py",
-    "runtime_cli.py", "quota_ledger.py", "quota_sources.py", "cloud_queue.py",
+    "runtime_cli.py", "quota_ledger.py", "quota_sources.py", "quota_dashboard.py", "cloud_queue.py",
     "cloud_server.py", "rerouter.py", "orchestrator.py", "claim_engine.py",
     "voting_engine.py", "extension_packages.py", "fleet_client.py", "node_registry.py",
 )
