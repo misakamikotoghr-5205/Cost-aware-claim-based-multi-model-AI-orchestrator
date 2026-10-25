@@ -2,14 +2,6 @@ diff --git a/apps/desktop/electron/main.ts b/apps/desktop/electron/main.ts
 index 10152261..6f788b5b 100644
 --- a/apps/desktop/electron/main.ts
 +++ b/apps/desktop/electron/main.ts
-@@ -133,7 +133,6 @@ import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
- import { discoverWithTeamFallback } from './cloud-discovery'
- import { createCloudSessionRecovery } from './cloud-session-recovery'
- import { installCommandScreenshot } from './command-screenshot'
--import { installRegionCapture } from './region-capture'
- import { composerImageTimestamp } from './composer-image-name'
- import { writeComposerPaste } from './composer-paste'
- import { applyConnectionChange, teardownSshState } from './connection-apply'
 @@ -428,6 +427,7 @@ import {
    localRouteFallbackProfiles,
    undialedSshRouteSeeds
@@ -18,14 +10,6 @@ index 10152261..6f788b5b 100644
  import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
  import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
  import { registerPreparedSubmissions } from './prepared-submissions'
-@@ -501,6 +501,7 @@ import {
-   createQuitTeardownCoordinator,
-   type QuitTeardownTask
- } from './quit-teardown'
-+import { installRegionCapture } from './region-capture'
- import {
-   boundedInstallId,
-   createPrimaryInstallIdResolver,
 @@ -17951,6 +17952,10 @@ app.whenReady().then(() => {
      rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
      overlayPreloadPath: path.join(APP_ROOT, 'dist', 'region-capture-preload.js')
@@ -39,10 +23,10 @@ index 10152261..6f788b5b 100644
      summon: () => {
 diff --git a/apps/desktop/electron/pointer-compact-policy.test.ts b/apps/desktop/electron/pointer-compact-policy.test.ts
 new file mode 100644
-index 00000000..ae2cfd8d
+index 00000000..dba577da
 --- /dev/null
 +++ b/apps/desktop/electron/pointer-compact-policy.test.ts
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,61 @@
 +import { describe, expect, it } from 'vitest'
 +
 +import { pointerBounds, pointerHandoff, pointerScope, samePointerScope } from './pointer-compact-policy'
@@ -64,11 +48,18 @@ index 00000000..ae2cfd8d
 +
 +  it('uses the right upper corner of a monitor with a negative origin', () => {
 +    expect(pointerBounds({ x: -1920, y: -100, width: 1920, height: 1080 })).toEqual({
-+      x: -396,
++      x: -376,
 +      y: -84,
-+      width: 380,
-+      height: 480
++      width: 360,
++      height: 200
 +    })
++  })
++
++  it('grows for choices within a fixed small maximum and shrinks to a compact empty state', () => {
++    const area = { x: 0, y: 0, width: 1920, height: 1080 }
++    expect(pointerBounds(area, 80).height).toBe(180)
++    expect(pointerBounds(area, 320).height).toBe(320)
++    expect(pointerBounds(area, 9000).height).toBe(440)
 +  })
 +
 +  it('clamps to a small monitor instead of stranding the controls outside it', () => {
@@ -99,7 +90,7 @@ index 00000000..ae2cfd8d
 +})
 diff --git a/apps/desktop/electron/pointer-compact-policy.ts b/apps/desktop/electron/pointer-compact-policy.ts
 new file mode 100644
-index 00000000..ea829691
+index 00000000..e01b0f79
 --- /dev/null
 +++ b/apps/desktop/electron/pointer-compact-policy.ts
 @@ -0,0 +1,89 @@
@@ -142,10 +133,10 @@ index 00000000..ea829691
 +}
 +
 +/** Top-right of this monitor's usable area, including negative desktop origins. */
-+export function pointerBounds(area: { x: number; y: number; width: number; height: number }) {
++export function pointerBounds(area: { x: number; y: number; width: number; height: number }, requestedHeight = 200) {
 +  const margin = Math.min(16, Math.max(0, Math.floor(Math.min(area.width, area.height) / 20)))
-+  const width = Math.max(1, Math.min(380, area.width - margin * 2))
-+  const height = Math.max(1, Math.min(480, area.height - margin * 2))
++  const width = Math.max(1, Math.min(360, area.width - margin * 2))
++  const height = Math.max(1, Math.min(Math.max(180, Math.min(440, requestedHeight)), area.height - margin * 2))
 +
 +  return { x: area.x + area.width - margin - width, y: area.y + margin, width, height }
 +}
@@ -194,10 +185,10 @@ index 00000000..ea829691
 +}
 diff --git a/apps/desktop/electron/pointer-compact-types.ts b/apps/desktop/electron/pointer-compact-types.ts
 new file mode 100644
-index 00000000..a1254304
+index 00000000..1f258842
 --- /dev/null
 +++ b/apps/desktop/electron/pointer-compact-types.ts
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,35 @@
 +export interface PointerScope {
 +  sessionId: string
 +  profile: string
@@ -225,6 +216,8 @@ index 00000000..a1254304
 +  context: PointerCompactContext | null
 +  open: (scope: PointerScope) => Promise<PointerDeliveryResult>
 +  close: () => Promise<boolean>
++  /** Compact-window-only sizing request, clamped to the current usable monitor. */
++  resize: (height: number) => Promise<boolean>
 +  handoff: (payload: Omit<PointerDelivery, 'requestId'>) => Promise<PointerDeliveryResult>
 +  isCurrent: (requestId: string, generation: string) => Promise<boolean>
 +  ack: (requestId: string, generation: string, result: PointerDeliveryResult) => void
@@ -233,10 +226,10 @@ index 00000000..a1254304
 +}
 diff --git a/apps/desktop/electron/pointer-compact.ts b/apps/desktop/electron/pointer-compact.ts
 new file mode 100644
-index 00000000..50b13750
+index 00000000..e74a5284
 --- /dev/null
 +++ b/apps/desktop/electron/pointer-compact.ts
-@@ -0,0 +1,306 @@
+@@ -0,0 +1,325 @@
 +import { createHash, randomUUID } from 'node:crypto'
 +
 +import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, nativeImage, screen } from 'electron'
@@ -446,6 +439,25 @@ index 00000000..50b13750
 +    return current && (caller === current.window || caller === current.owner) ? close() : false
 +  })
 +
++  ipcMain.handle('hermes:pointer-compact:resize', (event, height) => {
++    const item = current
++
++    if (!item || trusted(event) !== item.window || !Number.isInteger(height) || height < 0 || height > 10_000) {
++      return false
++    }
++
++    const previous = item.window.getBounds()
++    const area = screen.getDisplayMatching(previous).workArea
++    const bounds = pointerBounds(area, height)
++    item.window.setBounds({
++      ...bounds,
++      x: Math.max(area.x, Math.min(previous.x, area.x + area.width - bounds.width)),
++      y: Math.max(area.y, Math.min(previous.y, area.y + area.height - bounds.height))
++    })
++
++    return true
++  })
++
 +  ipcMain.handle('hermes:pointer-compact:handoff', async (event, input) => {
 +    const item = current
 +    const payload = pointerHandoff(input)
@@ -544,7 +556,7 @@ index 00000000..50b13750
 +  return () => close()
 +}
 diff --git a/apps/desktop/electron/preload.ts b/apps/desktop/electron/preload.ts
-index 2aef8ce0..345af82e 100644
+index 2aef8ce0..4e1d00e0 100644
 --- a/apps/desktop/electron/preload.ts
 +++ b/apps/desktop/electron/preload.ts
 @@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
@@ -555,7 +567,7 @@ index 2aef8ce0..345af82e 100644
  import type { RegionCaptureApi } from './region-capture-types'
  import { customWindowControlsEnabled } from './window-controls'
  
-@@ -27,6 +28,26 @@ const localSkin = ipcRenderer.sendSync('hermes:skin:local')
+@@ -27,6 +28,27 @@ const localSkin = ipcRenderer.sendSync('hermes:skin:local')
  import { unwrapExpectedNotFound } from './api-expected-404'
  
  contextBridge.exposeInMainWorld('hermesDesktop', {
@@ -563,6 +575,7 @@ index 2aef8ce0..345af82e 100644
 +    context: ipcRenderer.sendSync('hermes:pointer-compact:context'),
 +    open: scope => ipcRenderer.invoke('hermes:pointer-compact:open', scope),
 +    close: () => ipcRenderer.invoke('hermes:pointer-compact:close'),
++    resize: height => ipcRenderer.invoke('hermes:pointer-compact:resize', height),
 +    handoff: payload => ipcRenderer.invoke('hermes:pointer-compact:handoff', payload),
 +    isCurrent: (id, generation) => ipcRenderer.invoke('hermes:pointer-compact:current', id, generation),
 +    ack: (id, generation, result) => ipcRenderer.send('hermes:pointer-compact:ack', id, generation, result),
@@ -584,34 +597,70 @@ index 2aef8ce0..345af82e 100644
    } satisfies RegionCaptureApi,
 diff --git a/apps/desktop/src/app/pointer-compact/owner-bridge.test.ts b/apps/desktop/src/app/pointer-compact/owner-bridge.test.ts
 new file mode 100644
-index 00000000..7cd14fe0
+index 00000000..c32cc0e8
 --- /dev/null
 +++ b/apps/desktop/src/app/pointer-compact/owner-bridge.test.ts
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,121 @@
 +import { webcrypto } from 'node:crypto'
 +
 +import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 +
-+const mocks = vi.hoisted(() => ({ scope: { sessionId: 'chat', profile: 'work', connectionId: 'cloud' }, attach: vi.fn(), insert: vi.fn() }))
-+vi.mock('@/sdk', () => ({ host: { state: {
-+  focusedSessionOwner: { get: () => ({ profile: mocks.scope.profile, connectionId: mocks.scope.connectionId }) },
-+  focusedStoredSessionId: { get: () => mocks.scope.sessionId }, focusedSessionId: { get: () => mocks.scope.sessionId },
-+  focusedSessionProfile: { get: () => mocks.scope.profile }, connectionId: { get: () => mocks.scope.connectionId }
-+}, composer: { attachImages: mocks.attach, insertText: mocks.insert } } }))
++const mocks = vi.hoisted(() => ({
++  scope: { sessionId: 'chat', profile: 'work', connectionId: 'cloud' },
++  attach: vi.fn(),
++  insert: vi.fn()
++}))
++
++vi.mock('@/sdk', () => ({
++  host: {
++    state: {
++      focusedSessionOwner: { get: () => ({ profile: mocks.scope.profile, connectionId: mocks.scope.connectionId }) },
++      focusedStoredSessionId: { get: () => mocks.scope.sessionId },
++      focusedSessionId: { get: () => mocks.scope.sessionId },
++      focusedSessionProfile: { get: () => mocks.scope.profile },
++      connectionId: { get: () => mocks.scope.connectionId }
++    },
++    composer: { attachImages: mocks.attach, insertText: mocks.insert }
++  }
++}))
 +import { installPointerOwnerBridge } from './owner-bridge'
 +
 +let delivery: (payload: any) => void
 +let cancelled: (id: string) => void
 +let api: any
-+const payload = () => ({ generation: 'g', requestId: crypto.randomUUID(), scope: { ...mocks.scope }, text: 'Reviewed draft', imageDataUrl: 'data:image/png;base64,aGVsbG8=' })
-+const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setTimeout(resolve, 2)) }
++
++const payload = () => ({
++  generation: 'g',
++  requestId: crypto.randomUUID(),
++  scope: { ...mocks.scope },
++  text: 'Reviewed draft',
++  imageDataUrl: 'data:image/png;base64,aGVsbG8='
++})
++
++const settle = async () => {
++  for (let i = 0; i < 20; i++) {await new Promise(resolve => setTimeout(resolve, 2))}
++}
 +
 +beforeEach(() => {
 +  vi.stubGlobal('crypto', webcrypto)
 +  mocks.scope = { sessionId: 'chat', profile: 'work', connectionId: 'cloud' }
-+  mocks.attach.mockReset().mockResolvedValue(true); mocks.insert.mockReset().mockResolvedValue(true)
-+  api = { context: null, onDelivery: vi.fn(fn => { delivery = fn; return () => undefined }),
-+    onCancelled: vi.fn(fn => { cancelled = fn; return () => undefined }), isCurrent: vi.fn(async () => true), ack: vi.fn() }
++  mocks.attach.mockReset().mockResolvedValue(true)
++  mocks.insert.mockReset().mockResolvedValue(true)
++  api = {
++    context: null,
++    onDelivery: vi.fn(fn => {
++      delivery = fn
++
++      return () => undefined
++    }),
++    onCancelled: vi.fn(fn => {
++      cancelled = fn
++
++      return () => undefined
++    }),
++    isCurrent: vi.fn(async () => true),
++    ack: vi.fn()
++  }
 +  ;(window as any).hermesDesktop = { pointerCompact: api }
 +})
 +afterEach(() => vi.unstubAllGlobals())
@@ -623,14 +672,21 @@ index 00000000..7cd14fe0
 +})
 +
 +it('rejects a changed owner connection before attaching or inserting anything', async () => {
-+  installPointerOwnerBridge(); const request = payload(); mocks.scope.connectionId = 'different'
-+  delivery(request); await settle()
-+  expect(mocks.attach).not.toHaveBeenCalled(); expect(mocks.insert).not.toHaveBeenCalled()
++  installPointerOwnerBridge()
++  const request = payload()
++  mocks.scope.connectionId = 'different'
++  delivery(request)
++  await settle()
++  expect(mocks.attach).not.toHaveBeenCalled()
++  expect(mocks.insert).not.toHaveBeenCalled()
 +  expect(api.ack).toHaveBeenCalledWith(request.requestId, 'g', expect.objectContaining({ ok: false }))
 +})
 +
 +it('waits for real image ingestion then inserts text addressed to the frozen session', async () => {
-+  installPointerOwnerBridge(); const request = payload(); delivery(request); await settle()
++  installPointerOwnerBridge()
++  const request = payload()
++  delivery(request)
++  await settle()
 +  expect(mocks.attach).toHaveBeenCalledWith('chat', [expect.any(Blob)])
 +  expect(mocks.insert).toHaveBeenCalledWith('chat', 'Reviewed draft', { mode: 'block' })
 +  expect(api.ack).toHaveBeenCalledWith(request.requestId, 'g', { ok: true })
@@ -638,17 +694,32 @@ index 00000000..7cd14fe0
 +
 +it('cancellation during image ingestion prevents later text insertion', async () => {
 +  let finish: (value: boolean) => void = () => undefined
-+  mocks.attach.mockImplementation(() => new Promise(resolve => { finish = resolve }))
-+  installPointerOwnerBridge(); const request = payload(); delivery(request); await settle()
-+  cancelled(request.requestId); finish(true); await settle()
++  mocks.attach.mockImplementation(
++    () =>
++      new Promise(resolve => {
++        finish = resolve
++      })
++  )
++  installPointerOwnerBridge()
++  const request = payload()
++  delivery(request)
++  await settle()
++  cancelled(request.requestId)
++  finish(true)
++  await settle()
 +  expect(mocks.insert).not.toHaveBeenCalled()
 +  expect(api.ack).toHaveBeenCalledWith(request.requestId, 'g', expect.objectContaining({ ok: false }))
 +})
 +
 +it('a text retry after a partial delivery does not attach the same cropped image twice', async () => {
 +  mocks.insert.mockResolvedValueOnce(false)
-+  const dispose = installPointerOwnerBridge(); delivery(payload()); await settle(); delivery(payload()); await settle()
-+  expect(mocks.attach).toHaveBeenCalledTimes(1); expect(mocks.insert).toHaveBeenCalledTimes(2)
++  const dispose = installPointerOwnerBridge()
++  delivery(payload())
++  await settle()
++  delivery(payload())
++  await settle()
++  expect(mocks.attach).toHaveBeenCalledTimes(1)
++  expect(mocks.insert).toHaveBeenCalledTimes(2)
 +  dispose()
 +})
 diff --git a/apps/desktop/src/app/pointer-compact/owner-bridge.ts b/apps/desktop/src/app/pointer-compact/owner-bridge.ts
@@ -771,10 +842,10 @@ index 00000000..8e25540a
 +}
 diff --git a/apps/desktop/src/app/pointer-compact/pointer-root.tsx b/apps/desktop/src/app/pointer-compact/pointer-root.tsx
 new file mode 100644
-index 00000000..0b5dd1fb
+index 00000000..0c880b66
 --- /dev/null
 +++ b/apps/desktop/src/app/pointer-compact/pointer-root.tsx
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,235 @@
 +import { QueryClientProvider } from '@tanstack/react-query'
 +import { StrictMode, useEffect, useState } from 'react'
 +import { createRoot } from 'react-dom/client'
@@ -876,6 +947,58 @@ index 00000000..0b5dd1fb
 +
 +    return () => window.removeEventListener('keydown', dismiss, true)
 +  }, [])
++  useEffect(() => {
++    let frame = 0
++    let previousHeight = 0
++    let measured: Element | null = null
++
++    const fit = () => {
++      frame = 0
++      const content = document.querySelector('[data-pointer-content]')
++
++      if (content !== measured) {
++        if (measured) {observer.unobserve(measured)}
++        measured = content
++
++        if (content) {observer.observe(content)}
++      }
++
++      if (!content) {return}
++      const header = document.querySelector('[data-pointer-header]')
++
++      const height = Math.max(
++        180,
++        Math.min(
++          440,
++          Math.ceil(content.getBoundingClientRect().height + (header?.getBoundingClientRect().height || 34))
++        )
++      )
++
++      if (height === previousHeight) {return}
++      previousHeight = height
++      void window.hermesDesktop.pointerCompact?.resize(height)
++    }
++
++    const schedule = () => {
++      if (!frame) {frame = requestAnimationFrame(fit)}
++    }
++
++    const observer = new ResizeObserver(schedule)
++    const mutations = new MutationObserver(schedule)
++    mutations.observe(document.getElementById('root')!, {
++      childList: true,
++      subtree: true,
++      attributes: true,
++      attributeFilter: ['open']
++    })
++    schedule()
++
++    return () => {
++      cancelAnimationFrame(frame)
++      observer.disconnect()
++      mutations.disconnect()
++    }
++  }, [])
 +
 +  return (
 +    <div
@@ -889,6 +1012,7 @@ index 00000000..0b5dd1fb
 +      }}
 +    >
 +      <header
++        data-pointer-header
 +        style={
 +          {
 +            display: 'flex',
@@ -918,7 +1042,7 @@ index 00000000..0b5dd1fb
 +          返回聊天 ×
 +        </button>
 +      </header>
-+      <main style={{ minHeight: 0, flex: 1 }}>
++      <main style={{ minHeight: 0, flex: 1, overflow: 'hidden' }}>
 +        {error || (loaded && !pane?.render) ? (
 +          <div role="alert" style={{ padding: 16, fontSize: 12 }}>
 +            {error || '请在原生 Capabilities → Plugins 中启用智能指针 Desktop 界面。'}

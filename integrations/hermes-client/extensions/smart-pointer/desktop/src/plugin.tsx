@@ -177,30 +177,35 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
     finally { setDelivering(false); if (gate.current.accepts(generation)) setBusy(false) }
   }
 
-  if (compact) return <section className="pointer-pane pointer-compact" aria-label="智能指针浮框"><style>{CSS + `.pointer-compact{padding:10px;gap:9px}.pointer-compact p{font-size:11px}.pointer-compact .pointer-preview{max-height:64px;width:100%;object-fit:contain}.pointer-compact textarea{min-height:60px;font-size:12px}.pointer-compact .pointer-label{font-size:11px}.pointer-compact .pointer-image{max-height:140px;overflow:auto}.pointer-compact .pointer-row{gap:6px}.pointer-compact details{font-size:11px}.pointer-compact details[open]{display:flex;flex-direction:column;gap:7px}.pointer-compact .pointer-intents button{padding:7px;font-size:12px;line-height:1.4}`}</style>
+  if (compact) return <div style={{ height: '100%', overflow: 'auto' }}><section data-pointer-content className="pointer-pane pointer-compact" aria-label="智能指针浮框"><style>{CSS + `.pointer-compact{height:auto;padding:10px;gap:8px;overflow:visible}.pointer-compact p{font-size:11px}.pointer-compact .pointer-preview{max-height:64px;width:100%;object-fit:contain}.pointer-compact textarea{min-height:64px;font-size:12px}.pointer-compact .pointer-label{font-size:11px}.pointer-compact .pointer-image{max-height:140px;overflow:auto}.pointer-compact .pointer-row{gap:6px;flex-wrap:nowrap}.pointer-compact details{font-size:11px}.pointer-compact details[open]{display:flex;flex-direction:column;gap:7px}.pointer-compact .pointer-intents button{padding:7px;font-size:12px;line-height:1.4}.pointer-compact summary{cursor:pointer;color:var(--ui-text-secondary)}`}</style>
     <div className="pointer-row"><Button size="sm" disabled={busy} onClick={beginCapture}>{capture ? '重新圈选' : '开始圈选'}</Button>
-      <span style={{ fontSize: 11 }}>{region ? `${region.width} × ${region.height} · 仅选区` : '先圈选，再补充关键词'}</span></div>
+      <Input style={{ flex: 1, minWidth: 0 }} aria-label="关键词" value={keywords} onChange={event => editKeywords(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void propose() } }} placeholder={session ? '补充关键词，再换一批' : '输入关键词，例如：润色'} /></div>
     {busy && <Loader label={delivering ? '正在加入原聊天草稿' : '正在准备候选'} />}
     {error && <ErrorState title="暂时无法继续" description={error}><Button size="sm" onClick={() => setError('')}>返回操作</Button></ErrorState>}
-    {capture && !capture.region_already_cropped && <div className="pointer-image" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp}>
-      <img ref={image} src={capture.imageDataUrl} alt="本机截图，拖动以圈选" draggable={false} />
-      {region && <div className="pointer-region" style={{ left: `${region.x / capture.width * 100}%`, top: `${region.y / capture.height * 100}%`, width: `${region.width / capture.width * 100}%`, height: `${region.height / capture.height * 100}%` }} />}</div>}
-    {crop && <img className="pointer-preview" src={crop} alt="已圈选区域预览" />}
-    {capture && <SegmentedControl<Kind> value={kind} options={[{ id: 'auto', label: '自动' }, { id: 'document', label: '文档' }, { id: 'spreadsheet', label: '表格' }, { id: 'unknown', label: '其他' }]} onChange={value => { invalidate(); setKind(value) }} />}
-    <Input aria-label="关键词" value={keywords} onChange={event => editKeywords(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void propose() } }} placeholder={session ? '都不合适？补充关键词，再换一批' : '例如：润色、统计报表、整理格式'} />
-    <Button size="sm" disabled={!region || busy} onClick={() => propose()}>{session ? '追加关键词 / 换一批' : '生成多个候选'}</Button>
+    {!capture && <p>圈选一块区域，输入你想做的事。</p>}
+    {capture && <details><summary>选区 {region ? `${region.width} × ${region.height}` : '尚未裁剪'} · 预览与环境</summary>
+      {!capture.region_already_cropped && <div className="pointer-image" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp}>
+        <img ref={image} src={capture.imageDataUrl} alt="本机截图，拖动以圈选" draggable={false} />
+        {region && <div className="pointer-region" style={{ left: `${region.x / capture.width * 100}%`, top: `${region.y / capture.height * 100}%`, width: `${region.width / capture.width * 100}%`, height: `${region.height / capture.height * 100}%` }} />}</div>}
+      {crop && <img className="pointer-preview" src={crop} alt="已圈选区域预览" />}
+      <SegmentedControl<Kind> value={kind} options={[{ id: 'auto', label: '自动' }, { id: 'document', label: '文档' }, { id: 'spreadsheet', label: '表格' }, { id: 'unknown', label: '其他' }]} onChange={value => { invalidate(); setKind(value) }} />
+      <p>{capture.appContext?.windowTitle || capture.appContext?.sourceName || '应用未知，可手动选择环境。'}</p></details>}
+    {capture && <Button size="sm" disabled={!region || busy} onClick={() => propose()}>{session ? '追加关键词 / 换一批' : '生成多个候选'}</Button>}
     {session?.keywords && <p>累计关键词：{session.keywords}</p>}
     {session?.question && <p role="status">{session.question}</p>}
     {dirty && session && <p>关键词已修改，请先换一批。</p>}
     {session && !draft && <div className="pointer-intents">{session.candidates.map(candidate => <Button key={candidate.action_id} variant="secondary" disabled={busy || dirty} onClick={() => choose(candidate)}>{candidate.label} — {candidate.description}</Button>)}</div>}
-    {capture && <><div className="pointer-row"><Switch aria-label="附上所选区域图片" disabled={delivering} checked={attachImage} onCheckedChange={enabled => { gate.current.next(); setAttachImage(enabled); if (busy) { setBusy(false); setSession(null); setDraft(''); setSelectedAction('') } }} /><span style={{ fontSize: 11 }}>确认后附上这张选区图片</span></div>
-      <details><summary>粘贴选区原文 / 表格数据</summary><Textarea aria-label="选区原文 / 表格数据（可粘贴）" value={selectedText} disabled={busy} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction('') }} placeholder="不附图时，请粘贴要处理的内容。" /></details></>}
-    {draft && <><Textarea aria-label="聊天草稿预览" value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} />
+    {draft && <><details><summary>预览操作草稿</summary><Textarea aria-label="聊天草稿预览" value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} /></details>
+      <div className="pointer-row"><Switch aria-label="附上所选区域图片" disabled={delivering} checked={attachImage} onCheckedChange={enabled => { gate.current.next(); setAttachImage(enabled); if (busy) { setBusy(false); setSession(null); setDraft(''); setSelectedAction('') } }} /><span style={{ fontSize: 11 }}>确认后附上选区图片</span></div>
+      <details><summary>粘贴选区原文 / 表格数据</summary><Textarea aria-label="选区原文 / 表格数据（可粘贴）" value={selectedText} disabled={busy} onChange={event => {
+        gate.current.next(); const value = event.target.value; setSelectedText(value)
+        const original = session?.candidates.find(item => item.action_id === selectedAction)?.preview_prompt || draft.split('\n\n选区原文 / 表格数据：')[0]
+        setDraft(original + (value.trim() ? '\n\n选区原文 / 表格数据：\n' + value.trim() : '')); setError(''); setNotice('')
+      }} placeholder="不附图时，请粘贴要处理的内容。" /></details>
       <div className="pointer-row"><Button size="sm" disabled={busy || dirty || (!attachImage && !selectedText.trim())} onClick={insertDraft}>确认加入聊天草稿</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setDraft(''); setSelectedAction('') }}>重选</Button></div>
       {!attachImage && !selectedText.trim() && <p>请粘贴原文，或明确选择附上选区图片。</p>}</>}
     {notice && <p role="status">{notice}</p>}
-    <p>截图留在本机，候选不上传图片。确认仅加入草稿。</p>
-    <details><summary>本机代理与本地建议设置</summary>
+    <details><summary>设置</summary><p>截图留在本机，候选不上传图片。确认仅加入草稿。</p>
       <Input aria-label="本机代理 profile" value={profileInput} onChange={event => setProfileInput(event.target.value)} />
       <Button size="sm" disabled={busy || !profileInput.trim()} onClick={() => { try { localApi(profileInput.trim()); ctx.storage.set('local-profile', profileInput.trim()); setLocalProfile(profileInput.trim()); invalidate(); setNotice('本机代理已切换，请重新生成候选。') } catch (failure) { setError(String(failure)) } }}>连接此本机代理</Button>
       <div className="pointer-row"><span>本机模型建议</span><Switch aria-label="启用本机意图建议" checked={localSettings.enabled} onCheckedChange={enabled => setLocalSettings(value => ({ ...value, enabled }))} /></div>
@@ -209,7 +214,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
       <Input aria-label="超时（秒）" type="number" min={0.05} max={5} step={0.05} value={localSettings.timeout} onChange={event => setLocalSettings(value => ({ ...value, timeout: Number(event.target.value) }))} />
       <div className="pointer-row"><Button size="sm" onClick={loadLocalSettings}>读取设置</Button><Button size="sm" onClick={saveLocalSettings}>保存建议设置</Button></div>
     </details>
-  </section>
+  </section></div>
 
   return <section className="pointer-pane" aria-label="智能指针"><style>{CSS}</style>
     <div className="pointer-row"><strong>智能指针</strong><Button size="sm" onClick={beginCapture} disabled={busy}>开始圈选</Button>
