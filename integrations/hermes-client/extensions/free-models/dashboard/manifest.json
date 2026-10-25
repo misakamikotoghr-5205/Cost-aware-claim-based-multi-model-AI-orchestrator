@@ -1,7 +1,7 @@
 {
   "name": "free-models",
-  "label": "Free model discovery",
-  "description": "Native desktop REST backend",
+  "label": "免费模型发现",
+  "description": "按需发现免费目录和本机模型的接口。",
   "version": "0.2.1",
   "tab": {
     "hidden": true

@@ -1,7 +1,7 @@
 {
   "name": "local-judge",
-  "label": "Local judge",
-  "description": "Native desktop REST backend",
+  "label": "本机判断模型",
+  "description": "按需安装的本机判断模型接口。",
   "version": "0.2.1",
   "tab": {
     "hidden": true

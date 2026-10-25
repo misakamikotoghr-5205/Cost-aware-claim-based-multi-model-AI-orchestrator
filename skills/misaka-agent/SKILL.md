@@ -1,6 +1,6 @@
 ---
 name: misaka-agent
-description: Connect an agent to the user's explicitly selected MISAKA AGENT desktop runtime. Inspect account quota, optional extensions and worker state, preview routing, or dispatch bounded tasks to paired local nodes. Use when the user asks to use MISAKA AGENT, its cloud/local fleet, or its quota dashboard from another agent.
+description: 将其他智能体接入用户明确选择的 MISAKA AGENT 运行时，查询账号额度、可选扩展和节点状态，预览路由或向已配对本地节点提交有界任务。用户希望从其他智能体调用 MISAKA AGENT、云端本地协同或额度面板时使用。
 license: MIT
 compatibility: Python 3.10+; a locally installed MISAKA AGENT runtime based on the pinned Hermes gateway, with orchestrator-core enabled. Host must permit local subprocess and loopback HTTP access.
 metadata:

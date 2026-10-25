@@ -1,5 +1,5 @@
 name: orchestrator-core
 version: 0.2.1
-description: Native Hermes delegation scoring and optional private fleet controls. Model authentication stays with Hermes.
-author: Orchestrator contributors
+description: 本机任务评分、账号额度和云端本地协同；模型登录由原生客户端管理。
+author: MISAKA AGENT 贡献者
 kind: backend
