@@ -9,6 +9,7 @@ import { parseArgs } from 'node:util'
 
 const { values } = parseArgs({ options: {
   upstream: { type: 'string' }, 'hermes-home': { type: 'string' }, output: { type: 'string' },
+  'native-launcher': { type: 'string' },
 } })
 for (const key of ['upstream', 'hermes-home', 'output']) assert(values[key], `--${key} is required`)
 const upstream = resolve(values.upstream)
@@ -19,9 +20,10 @@ const requireUpstream = createRequire(join(upstream, 'package.json'))
 const { _electron } = requireUpstream('@playwright/test')
 const executablePath = requireUpstream('electron')
 const desktopRoot = join(upstream, 'apps/desktop')
-const nativeLauncher = (process.platform === 'win32' ? ['hermes.exe', 'hermes.cmd'] : ['hermes'])
-  .map(name => join(upstream, '.hermes/bin', name)).find(candidate => existsSync(candidate))
-assert(nativeLauncher, 'The actual prepared installation launcher is missing')
+const nativeLauncher = values['native-launcher'] ? resolve(values['native-launcher'])
+  : (process.platform === 'win32' ? ['hermes.exe', 'hermes.cmd'] : ['hermes'])
+    .map(name => join(upstream, '.hermes/bin', name)).find(candidate => existsSync(candidate))
+assert(nativeLauncher && existsSync(nativeLauncher), 'The actual prepared installation launcher is missing')
 const ownDirectory = dirname(fileURLToPath(import.meta.url))
 const userData = join(profile, 'acceptance-electron-user-data')
 mkdirSync(userData, { recursive: true })
@@ -40,7 +42,6 @@ Object.assign(env, {
   HERMES_DESKTOP_USER_DATA_DIR: userData,
   HERMES_DESKTOP_HERMES_ROOT: upstream,
   HERMES_DESKTOP_HERMES: nativeLauncher,
-  HERMES_DESKTOP_APP_NAME: `HermesAcceptance-${Date.now()}`,
   HERMES_DESKTOP_ISOLATED_BACKEND: '1',
   HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1', HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION: '1',
 })
@@ -71,13 +72,19 @@ try {
   if (process.platform === 'win32') {
     checkpoint('probing_real_windows_capture_environment')
     report.screen_api_diagnostics = []
-    for (const variant of [{ thumbnail: 0, disabled: true }, { thumbnail: 0, disabled: false }, { thumbnail: 1, disabled: false }]) {
-      const file = 'capture-environment-' + variant.thumbnail + (variant.disabled ? '-gpu-disabled' : '-gpu-default') + '.json'
+    for (const variant of [{ thumbnail: 0, disabled: true }, { thumbnail: 0, disabled: false }, { thumbnail: 1, disabled: false }, { thumbnail: 0, disabled: false, metadata: true }]) {
+      const file = variant.metadata ? 'get-windows-environment.json' : 'capture-environment-' + variant.thumbnail + (variant.disabled ? '-gpu-disabled' : '-gpu-default') + '.json'
       const diagnostic = spawnSync(executablePath, [join(ownDirectory, 'capture-environment.mjs'), '--no-sandbox',
         ...(variant.disabled ? ['--disable-gpu'] : []), '--capture-thumbnail=' + variant.thumbnail,
+        ...(variant.metadata ? ['--capture-mode=metadata'] : []),
         '--capture-report=' + join(output, file)], { env, cwd: desktopRoot, stdio: ['ignore', 'pipe', 'pipe'], timeout: 25_000, windowsHide: true, maxBuffer: 1024 * 1024 })
-      const result = existsSync(join(output, file)) ? JSON.parse(readFileSync(join(output, file), 'utf8'))
+      let result = existsSync(join(output, file)) ? JSON.parse(readFileSync(join(output, file), 'utf8'))
         : { result: 'process_failed', status: diagnostic.status, code: diagnostic.error?.code, error: redact(diagnostic.stderr?.toString() || '') }
+      if (diagnostic.error || diagnostic.status !== 0) {
+        result = { ...result, result: 'process_failed', status: diagnostic.status,
+          code: diagnostic.error?.code, error: redact(diagnostic.stderr?.toString() || '') }
+        writeFileSync(join(output, file), JSON.stringify(result, null, 2))
+      }
       report.screen_api_diagnostics.push({ file, ...result })
       console.log(JSON.stringify({ screen_api_diagnostic: file, result: result.result, elapsed_ms: result.elapsed_ms, error: result.error }))
     }

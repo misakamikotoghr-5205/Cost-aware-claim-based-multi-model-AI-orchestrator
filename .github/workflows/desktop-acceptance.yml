@@ -65,9 +65,17 @@ jobs:
           path: ${{ steps.npm-cache-location.outputs.path }}
           key: windows-native-public-npm-node24-${{ hashFiles('integrations/hermes-client/upstream.json') }}
       - name: Prepare actual pinned native runtime and application
+        id: native-preparation
         run: |
           python -m pip install -r requirements.txt
-          python scripts/prepare_native_client.py --cache-dir "$env:RUNNER_TEMP/native-source" --hermes-home "$env:RUNNER_TEMP/native-profile" --build
+          $nativePreparedLines = python scripts/prepare_native_client.py --cache-dir "$env:RUNNER_TEMP/native-source" --hermes-home "$env:RUNNER_TEMP/native-profile" --build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $nativePreparedJson = $nativePreparedLines -join [Environment]::NewLine
+          $nativePreparedJson | Set-Content -Encoding utf8 (Join-Path $env:RUNNER_TEMP 'native-preparation.json')
+          $nativePrepared = $nativePreparedJson | ConvertFrom-Json
+          if (-not $nativePrepared.native_runtime.ready -or -not $nativePrepared.native_built) { throw 'Actual native preparation did not establish readiness.' }
+          "source=$($nativePrepared.checkout)" >> $env:GITHUB_OUTPUT
+          "launcher=$($nativePrepared.native_runtime.launcher)" >> $env:GITHUB_OUTPUT
       - name: Cache public npm package bytes only
         if: always() && steps.npm-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -77,9 +85,7 @@ jobs:
       - name: Actual Electron launch, native capture and screenshots
         timeout-minutes: 8
         run: |
-          $spec = Get-Content integrations/hermes-client/upstream.json | ConvertFrom-Json
-          $source = Join-Path "$env:RUNNER_TEMP/native-source" "hermes-$($spec.commit)"
-          node scripts/acceptance/native-desktop.mjs --upstream "$source" --hermes-home "$env:RUNNER_TEMP/native-profile" --output acceptance-results
+          node scripts/acceptance/native-desktop.mjs --upstream "${{ steps.native-preparation.outputs.source }}" --native-launcher "${{ steps.native-preparation.outputs.launcher }}" --hermes-home "$env:RUNNER_TEMP/native-profile" --output acceptance-results
       - name: Upload only screenshots and redacted acceptance report
         if: always()
         uses: actions/upload-artifact@v4
