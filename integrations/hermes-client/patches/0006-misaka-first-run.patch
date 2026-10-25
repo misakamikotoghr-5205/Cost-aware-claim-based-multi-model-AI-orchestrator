@@ -1,0 +1,606 @@
+diff --git a/apps/desktop/src/components/onboarding/first-run-guidance.test.tsx b/apps/desktop/src/components/onboarding/first-run-guidance.test.tsx
+new file mode 100644
+index 00000000..21c7ee29
+--- /dev/null
++++ b/apps/desktop/src/components/onboarding/first-run-guidance.test.tsx
+@@ -0,0 +1,53 @@
++import { cleanup, render, screen } from '@testing-library/react'
++import { afterEach, describe, expect, it } from 'vitest'
++
++import { I18nProvider } from '@/i18n'
++import { $desktopOnboarding, type OnboardingContext } from '@/store/onboarding'
++import { markOnboardingDecided } from '@/store/onboarding-presence'
++import { makeOAuthProvider } from '@/test/oauth-provider'
++
++import { DesktopOnboardingOverlay } from '.'
++
++markOnboardingDecided()
++
++const pendingGateway = (() => new Promise(() => {})) as OnboardingContext['requestGateway']
++const initial = $desktopOnboarding.get()
++
++const missingProvider =
++  'Hermes is not connected to any AI provider yet. Run `hermes model` to pick one, type `/login` in chat, or add a key with `hermes auth add <provider>`. (Advanced: put an API key such as OPENROUTER_API_KEY in ~/.hermes/.env.)'
++
++function renderReason(reason: string) {
++  $desktopOnboarding.set({
++    ...initial,
++    configured: false,
++    firstRunSkipped: false,
++    providers: [makeOAuthProvider('anthropic', 'Anthropic Claude')],
++    reason
++  })
++  render(
++    <I18nProvider configClient={null} initialLocale="zh">
++      <DesktopOnboardingOverlay enabled profile="default" requestGateway={pendingGateway} />
++    </I18nProvider>
++  )
++}
++
++afterEach(() => {
++  cleanup()
++  $desktopOnboarding.set(initial)
++})
++
++describe('MISAKA first-run guidance', () => {
++  it('explains a blank install in Chinese when the runtime still reports configured credentials', () => {
++    renderReason(`${missingProvider} setup.status reports configured credentials, but runtime resolution still failed.`)
++
++    expect(screen.getByText('MISAKA AGENT 尚未连接模型。请选择本地模型、OAuth 或 API，也可以稍后配置。')).toBeTruthy()
++    expect(screen.queryByText(/Hermes is not connected|setup.status reports/)).toBeNull()
++  })
++
++  it('keeps a real runtime failure supplied by the caller', () => {
++    const failure = 'Provider endpoint returned HTTP 503. Check https://example.invalid/status.'
++    renderReason(failure)
++
++    expect(screen.getByText(failure)).toBeTruthy()
++  })
++})
+diff --git a/apps/desktop/src/components/onboarding/index.tsx b/apps/desktop/src/components/onboarding/index.tsx
+index b847d873..91ae3b60 100644
+--- a/apps/desktop/src/components/onboarding/index.tsx
++++ b/apps/desktop/src/components/onboarding/index.tsx
+@@ -11,6 +11,7 @@ import { getGlobalModelOptions } from '@/hermes'
+ import { useI18n } from '@/i18n'
+ import { Check, ChevronLeft, KeyRound, Loader2 } from '@/lib/icons'
+ import { isSubmitEnter } from '@/lib/ime'
++import { isMissingProviderReason } from '@/lib/onboarding-guidance'
+ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+ import { cn } from '@/lib/utils'
+ import { $desktopBoot, type DesktopBootState } from '@/store/boot'
+@@ -379,10 +380,9 @@ export function DesktopOnboardingOverlay({
+   }
+ 
+   const { flow } = onboarding
+-  // Show the launch reason only when it's a meaningful, caller-supplied prompt —
+-  // suppress the generic defaults (useless noise) and provider-setup errors
+-  // (those are surfaced by FlowPanel, not as a banner).
++  // A blank install gets setup guidance. Keep unrelated caller failures useful.
+   const rawReason = onboarding.reason?.trim() || null
++  const missingProvider = rawReason === DEFAULT_ONBOARDING_REASON || (rawReason && isMissingProviderReason(rawReason))
+ 
+   // When the free tier itself failed to set up, its own notice explains the
+   // picker; the runtime check's technical reason ("No usable credentials
+@@ -390,10 +390,12 @@ export function DesktopOnboardingOverlay({
+   const reason =
+     rawReason &&
+     !setupFailure &&
+-    !isProviderSetupErrorMessage(rawReason) &&
+-    rawReason !== DEFAULT_ONBOARDING_REASON &&
+     rawReason !== DEFAULT_MANUAL_ONBOARDING_REASON
+-      ? rawReason
++      ? missingProvider
++        ? t.onboarding.providerSetupHint
++        : !isProviderSetupErrorMessage(rawReason)
++          ? rawReason
++          : null
+       : null
+ 
+   // In manual mode the app is already configured, so the flow is "ready"
+diff --git a/apps/desktop/src/components/shared-metrics/consent-dialog.test.tsx b/apps/desktop/src/components/shared-metrics/consent-dialog.test.tsx
+index da043468..3c140092 100644
+--- a/apps/desktop/src/components/shared-metrics/consent-dialog.test.tsx
++++ b/apps/desktop/src/components/shared-metrics/consent-dialog.test.tsx
+@@ -1,7 +1,9 @@
+-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
++import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+ 
+-import { en } from '@/i18n/en'
++import { $activeConnectionId } from '@/store/connections'
++import * as gatewayStore from '@/store/gateway'
++import { $notifications, dismissNotification } from '@/store/notifications'
+ import { $desktopOnboarding } from '@/store/onboarding'
+ import { markOnboardingDecided } from '@/store/onboarding-presence'
+ import {
+@@ -13,11 +15,8 @@ import {
+ 
+ import { SharedMetricsConsentDialog } from './consent-dialog'
+ 
+-// Onboarding's due check answered "not due": first-run surfaces are free to show.
+ markOnboardingDecided()
+ 
+-const copy = en.sharedMetrics
+-
+ function backend(initial: SharedMetricsConsent) {
+   const calls: { method: string; params?: Record<string, unknown> }[] = []
+   let stored = initial
+@@ -27,7 +26,7 @@ function backend(initial: SharedMetricsConsent) {
+ 
+     if (method === 'shared_metrics.set') {
+       const enabled = params?.enabled === true
+-      stored = { enabled, send: enabled && params?.send === true, decided: true }
++      stored = { enabled, send: enabled && params?.send === true, decided: true, reask: false }
+     }
+ 
+     return stored as T
+@@ -37,6 +36,7 @@ function backend(initial: SharedMetricsConsent) {
+ }
+ 
+ const initialOnboarding = $desktopOnboarding.get()
++const initialConnectionId = $activeConnectionId.get()
+ 
+ beforeEach(() => {
+   $desktopOnboarding.set({ ...initialOnboarding, configured: true })
+@@ -45,58 +45,125 @@ beforeEach(() => {
+ afterEach(() => {
+   cleanup()
+   $desktopOnboarding.set(initialOnboarding)
++  $activeConnectionId.set(initialConnectionId)
+   $sharedMetricsConsent.set(null)
+   $sharedMetricsDetailsOpen.set(false)
++  $notifications.get().forEach(notification => dismissNotification(notification.id))
++  vi.restoreAllMocks()
+ })
+ 
+-describe('SharedMetricsConsentDialog', () => {
+-  it('never blocks launch: an undecided profile becomes a composer offer, not a modal', async () => {
+-    const undecided = backend({ enabled: false, send: false, decided: false })
+-
+-    const { unmount } = render(
+-      <SharedMetricsConsentDialog enabled profile="default" requestGateway={undecided.requestGateway} />
+-    )
++describe('MISAKA shared metrics default', () => {
++  it('saves both opt-ins off for the named fresh profile without offering to share', async () => {
++    const fresh = backend({ enabled: false, send: false, decided: false, reask: false })
++    render(<SharedMetricsConsentDialog enabled profile="code" requestGateway={fresh.requestGateway} />)
+ 
+-    await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true))
++    await waitFor(() => expect($sharedMetricsConsent.get()?.decided).toBe(true))
++    expect($sharedMetricsConsent.get()).toMatchObject({ enabled: false, send: false })
++    expect(fresh.calls).toEqual([
++      { method: 'shared_metrics.status', params: { profile: 'code' } },
++      { method: 'shared_metrics.set', params: { profile: 'code', enabled: false, send: false, first_run: false } }
++    ])
++    expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(false)
+     expect(screen.queryByRole('dialog')).toBeNull()
+-    unmount()
++  })
+ 
+-    // An answer given in `hermes setup` is the same config keys: no offer at all.
+-    const answered = backend({ enabled: false, send: false, decided: true })
+-    render(<SharedMetricsConsentDialog enabled profile="work" requestGateway={answered.requestGateway} />)
+-    await waitFor(() => expect($sharedMetricsConsent.get()?.decided).toBe(true))
++  it.each([
++    { enabled: true, send: true, decided: true },
++    { enabled: false, send: false, decided: true },
++    { enabled: true, send: false, decided: true },
++    { enabled: false, send: false, decided: false, reask: true }
++  ])('preserves an existing answer %j', async answer => {
++    const existing = backend(answer)
++    render(<SharedMetricsConsentDialog enabled profile="code" requestGateway={existing.requestGateway} />)
++
++    await waitFor(() => expect($sharedMetricsConsent.get()).toEqual(answer))
++    expect(existing.calls.every(call => call.method === 'shared_metrics.status')).toBe(true)
+     expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(false)
+   })
+ 
+-  it('details decide nothing when closed and record a chosen answer as both opt-ins', async () => {
+-    const { calls, requestGateway } = backend({ enabled: false, send: false, decided: false })
+-
+-    render(<SharedMetricsConsentDialog enabled profile="havoc" requestGateway={requestGateway} />)
+-    await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true))
+-    expect(calls.find(c => c.method === 'shared_metrics.status')?.params).toEqual({ profile: 'havoc' })
+-
+-    $sharedMetricsDetailsOpen.set(true)
+-    await screen.findByRole('dialog')
+-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+-    expect(calls.some(c => c.method === 'shared_metrics.set')).toBe(false)
+-    expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(true)
+-
+-    $sharedMetricsDetailsOpen.set(true)
+-    const noThanks = await screen.findByRole('button', { name: copy.off })
+-    expect(screen.getByRole('button', { name: copy.share })).toBeTruthy()
+-    expect(screen.queryByRole('button', { name: /computer|local/i })).toBeNull()
+-    // Nothing is preselected: no choice holds focus when the details open.
+-    expect(noThanks.ownerDocument.activeElement).not.toBe(noThanks)
+-    fireEvent.click(noThanks)
+-
+-    await waitFor(() => expect(sharedMetricsOfferPending($sharedMetricsConsent.get())).toBe(false))
+-    expect(screen.queryByRole('dialog')).toBeNull()
+-    expect(calls.find(c => c.method === 'shared_metrics.set')?.params).toEqual({
+-      enabled: false,
+-      send: false,
+-      first_run: true,
+-      profile: 'havoc'
+-    })
++  it('does not write a late status response after the profile changes', async () => {
++    let resolveOld!: (answer: SharedMetricsConsent) => void
++    const oldCalls: string[] = []
++
++    const oldRequest = <T,>(method: string) => {
++      oldCalls.push(method)
++
++      return new Promise<SharedMetricsConsent>(resolve => { resolveOld = resolve }) as Promise<T>
++    }
++
++    const next = backend({ enabled: true, send: true, decided: true })
++    const view = render(<SharedMetricsConsentDialog enabled profile="old" requestGateway={oldRequest} />)
++    view.rerender(<SharedMetricsConsentDialog enabled profile="new" requestGateway={next.requestGateway} />)
++    await waitFor(() => expect($sharedMetricsConsent.get()?.send).toBe(true))
++
++    await act(async () => resolveOld({ enabled: false, send: false, decided: false }))
++    expect(oldCalls).toEqual(['shared_metrics.status'])
++    expect($sharedMetricsConsent.get()?.send).toBe(true)
++  })
++
++  it('reports a failed default write and retries without claiming that it saved', async () => {
++    const fresh = backend({ enabled: false, send: false, decided: false, reask: false })
++    let fail = true
++
++    const requestGateway = <T,>(method: string, params?: Record<string, unknown>): Promise<T> =>
++      method === 'shared_metrics.set' && fail
++        ? Promise.reject(new Error('config.yaml is read-only'))
++        : fresh.requestGateway<T>(method, params)
++
++    render(<SharedMetricsConsentDialog enabled profile="code" requestGateway={requestGateway} />)
++
++    await waitFor(() => expect($notifications.get().some(item => item.message.includes('config.yaml is read-only'))).toBe(true))
++    expect($sharedMetricsConsent.get()).toBeNull()
++    fail = false
++    const retry = $notifications.get().find(item => item.action)?.action
++    expect(retry).toBeTruthy()
++    await act(async () => retry?.onClick())
++    await waitFor(() => expect($sharedMetricsConsent.get()).toMatchObject({ enabled: false, send: false, decided: true }))
++  })
++
++  it('does not write to a new connection after a same-profile source switch', async () => {
++    let epoch = 0
++    vi.spyOn(gatewayStore, 'gatewayActivationEpoch').mockImplementation(() => epoch)
++    let resolveStatus!: (answer: SharedMetricsConsent) => void
++    const calls: string[] = []
++
++    const requestGateway = <T,>(method: string) => {
++      calls.push(method)
++
++      return new Promise<SharedMetricsConsent>(resolve => { resolveStatus = resolve }) as Promise<T>
++    }
++
++    render(<SharedMetricsConsentDialog enabled profile="default" requestGateway={requestGateway} />)
++
++    epoch++
++    await act(async () => resolveStatus({ enabled: false, send: false, decided: false }))
++    expect(calls).toEqual(['shared_metrics.status'])
++    expect($sharedMetricsConsent.get()).toBeNull()
++  })
++
++  it('reads the new connection even when its profile and gateway instance are unchanged', async () => {
++    let resolveOld!: (answer: SharedMetricsConsent) => void
++    const calls: { connection: string | null; method: string }[] = []
++
++    const requestGateway = <T,>(method: string): Promise<T> => {
++      const connection = $activeConnectionId.get()
++      calls.push({ connection, method })
++
++      return connection === 'old'
++        ? new Promise<SharedMetricsConsent>(resolve => { resolveOld = resolve }) as Promise<T>
++        : Promise.resolve({ enabled: true, send: true, decided: true } as T)
++    }
++
++    $activeConnectionId.set('old')
++    render(<SharedMetricsConsentDialog enabled profile="default" requestGateway={requestGateway} />)
++
++    await act(async () => { $activeConnectionId.set('new') })
++    await waitFor(() => expect($sharedMetricsConsent.get()?.send).toBe(true))
++    await act(async () => resolveOld({ enabled: false, send: false, decided: false }))
++    expect(calls).toEqual([
++      { connection: 'old', method: 'shared_metrics.status' },
++      { connection: 'new', method: 'shared_metrics.status' }
++    ])
++    expect($sharedMetricsConsent.get()?.send).toBe(true)
+   })
+ })
+diff --git a/apps/desktop/src/components/shared-metrics/consent-dialog.tsx b/apps/desktop/src/components/shared-metrics/consent-dialog.tsx
+index bfb10d24..9994a380 100644
+--- a/apps/desktop/src/components/shared-metrics/consent-dialog.tsx
++++ b/apps/desktop/src/components/shared-metrics/consent-dialog.tsx
+@@ -15,14 +15,16 @@ import { useI18n } from '@/i18n'
+ import { ChevronDown } from '@/lib/icons'
+ import { $tourActive } from '@/lib/tour/tour-active'
+ import { cn } from '@/lib/utils'
+-import { notifyError } from '@/store/notifications'
++import { $activeConnectionId } from '@/store/connections'
++import { $gateway, gatewayActivationEpoch } from '@/store/gateway'
++import { dismissNotification, notify, notifyError } from '@/store/notifications'
+ import { $desktopOnboarding } from '@/store/onboarding'
+ import { $onboardingSurfaceClear } from '@/store/onboarding-presence'
+ import {
+   $sharedMetricsConsent,
+   $sharedMetricsDetailsOpen,
+   answerSharedMetricsOffer,
+-  readSharedMetricsConsent,
++  initializeSharedMetricsOff,
+   SHARED_METRICS_DOCS_URL,
+   type SharedMetricsChoice,
+   sharedMetricsOfferPending,
+@@ -33,23 +35,18 @@ import {
+ interface SharedMetricsConsentDialogProps {
+   /** The focused gateway is open. */
+   enabled: boolean
+-  /** Re-ask per profile: each profile keeps its own opt-ins and install ID. */
++  /** Each profile keeps its own opt-ins and install ID. */
+   profile: string
+   requestGateway: SharedMetricsRequester
+ }
+ 
+ const CHOICE_ORDER: readonly SharedMetricsChoice[] = ['share', 'off']
++const DEFAULT_SAVE_ERROR = 'misaka-shared-metrics-default-save'
+ 
+ /**
+- * Owner of the one-time shared-metrics question, the Desktop twin of `hermes
+- * setup`'s Shared Metrics section. It reads the focused profile's answer once
+- * first-run onboarding is out of the way; an unanswered profile gets an OFFER in
+- * the composer status stack (`SharedMetricsConsentStrip`), never a modal — a
+- * healthy install opens straight to chat. An answer given in the CLI (or here,
+- * or in Settings) is the same config keys, so nobody is asked twice. This host
+- * also paints the "What is collected" details the strip opens on request:
+- * two equal choices, neither preselected or focused, and closing it decides
+- * nothing (the strip stays until answered).
++ * MISAKA saves the existing backend's two opt-ins off on a fresh profile.
++ * Existing CLI/Settings choices remain authoritative. The atom publishes only
++ * confirmed backend state; a failed write stays unknown and offers a retry.
+  */
+ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }: SharedMetricsConsentDialogProps) {
+   const { t } = useI18n()
+@@ -62,11 +59,12 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
+   const detailsOpen = useStore($sharedMetricsDetailsOpen)
+   const [expanded, setExpanded] = useState(true)
+   const [saving, setSaving] = useState(false)
++  const gateway = useStore($gateway)
++  const connectionId = useStore($activeConnectionId)
+ 
+   const scopedRequest = useMemo(() => sharedMetricsProfileRequester(requestGateway, profile), [profile, requestGateway])
+ 
+-  // Never over the provider picker, the free-tier welcome, onboarding or a tour on screen:
+-  // the question belongs to the moment after setup.
++  // Resolve the default after the provider picker, welcome and tour settle.
+   const onboardingSettled =
+     (onboarding.configured === true || onboarding.firstRunSkipped) &&
+     !onboarding.manual &&
+@@ -84,15 +82,49 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
+     }
+ 
+     let cancelled = false
++    let refreshGeneration = 0
++    const epoch = gatewayActivationEpoch()
++
++    const stillCurrent = () =>
++      !cancelled &&
++      $gateway.get() === gateway &&
++      $activeConnectionId.get() === connectionId &&
++      gatewayActivationEpoch() === epoch
++
++    const refresh = () => {
++      const generation = ++refreshGeneration
++      const ownsRefresh = () => stillCurrent() && generation === refreshGeneration
++
++      void initializeSharedMetricsOff(scopedRequest, ownsRefresh)
++        .then(next => {
++          if (ownsRefresh()) {
++            $sharedMetricsConsent.set(next)
++            dismissNotification(DEFAULT_SAVE_ERROR)
++          }
++        })
++        .catch(error => {
++          if (ownsRefresh()) {
++            $sharedMetricsConsent.set(null)
++            notify({
++              id: DEFAULT_SAVE_ERROR,
++              kind: 'error',
++              title: copy.saveFailed,
++              message: error instanceof Error ? error.message : String(error),
++              action: { label: t.common.retry, onClick: refresh }
++            })
++          }
++        })
++    }
+ 
+-    void readSharedMetricsConsent(scopedRequest).then(next => {
+-      if (!cancelled) {
+-        $sharedMetricsConsent.set(next)
+-      }
+-    })
++    refresh()
++    window.addEventListener('focus', refresh)
+ 
+-    return () => void (cancelled = true)
+-  }, [ready, profile, scopedRequest])
++    return () => {
++      cancelled = true
++      window.removeEventListener('focus', refresh)
++      dismissNotification(DEFAULT_SAVE_ERROR)
++    }
++  }, [ready, profile, scopedRequest, gateway, connectionId, copy.saveFailed, t.common.retry])
+ 
+   if (!ready || !detailsOpen || !sharedMetricsOfferPending(consent)) {
+     return null
+diff --git a/apps/desktop/src/i18n/de_onboarding.ts b/apps/desktop/src/i18n/de_onboarding.ts
+index c82dedd2..d1e055bc 100644
+--- a/apps/desktop/src/i18n/de_onboarding.ts
++++ b/apps/desktop/src/i18n/de_onboarding.ts
+@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
+ 
+ export const deOnboarding: TranslationOverrides['onboarding'] = {
+   headerTitle: 'MISAKA AGENT für Sie einrichten',
++  providerSetupHint: 'MISAKA AGENT ist noch mit keinem Modell verbunden. Wähle ein lokales Modell, OAuth oder eine API, oder richte es später ein.',
+   headerDesc:
+     'Verbinden Sie einen Modell-Anbieter, um mit dem Chatten zu beginnen. Die meisten Optionen brauchen nur einen Klick.',
+   preparingInstall:
+diff --git a/apps/desktop/src/i18n/en_onboarding.ts b/apps/desktop/src/i18n/en_onboarding.ts
+index a4f0faa3..8122d2e4 100644
+--- a/apps/desktop/src/i18n/en_onboarding.ts
++++ b/apps/desktop/src/i18n/en_onboarding.ts
+@@ -2,6 +2,7 @@ import type { Translations } from './types'
+ 
+ export const enOnboarding: Translations['onboarding'] = {
+   headerTitle: '欢迎使用 MISAKA AGENT',
++  providerSetupHint: 'MISAKA AGENT is not connected to a model yet. Choose a local model, OAuth or API, or configure it later.',
+   headerDesc: '本地模型、OAuth 或 API，选择适合你的连接方式。云端协同与扩展可以稍后配置。',
+   preparingInstall: 'MISAKA AGENT is finishing install. This usually takes under a minute on first run.',
+   starting: 'Starting MISAKA AGENT…',
+diff --git a/apps/desktop/src/i18n/es_onboarding.ts b/apps/desktop/src/i18n/es_onboarding.ts
+index 30e18eca..5218078c 100644
+--- a/apps/desktop/src/i18n/es_onboarding.ts
++++ b/apps/desktop/src/i18n/es_onboarding.ts
+@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
+ 
+ export const esOnboarding: TranslationOverrides['onboarding'] = {
+   headerTitle: 'Vamos a configurar MISAKA AGENT',
++  providerSetupHint: 'MISAKA AGENT aún no está conectado a un modelo. Elige un modelo local, OAuth o una API, o configúralo más tarde.',
+   headerDesc: 'Conecta un proveedor de modelo para empezar a chatear. La mayoría de opciones requieren un clic.',
+   preparingInstall: 'MISAKA AGENT está terminando la instalación. En el primer inicio suele tardar menos de un minuto.',
+   starting: 'Iniciando MISAKA AGENT…',
+diff --git a/apps/desktop/src/i18n/fr_onboarding.ts b/apps/desktop/src/i18n/fr_onboarding.ts
+index 0f02c8ec..aae0be09 100644
+--- a/apps/desktop/src/i18n/fr_onboarding.ts
++++ b/apps/desktop/src/i18n/fr_onboarding.ts
+@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
+ 
+ export const frOnboarding: TranslationOverrides['onboarding'] = {
+   headerTitle: 'Configurons MISAKA AGENT pour vous',
++  providerSetupHint: 'MISAKA AGENT n’est pas encore connecté à un modèle. Choisissez un modèle local, OAuth ou une API, ou configurez-le plus tard.',
+   headerDesc:
+     'Connectez un fournisseur de modèles pour commencer à discuter. La plupart des options nécessitent un clic.',
+   preparingInstall: "MISAKA AGENT finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",
+diff --git a/apps/desktop/src/i18n/ja_onboarding.ts b/apps/desktop/src/i18n/ja_onboarding.ts
+index 2361a717..e46191a5 100644
+--- a/apps/desktop/src/i18n/ja_onboarding.ts
++++ b/apps/desktop/src/i18n/ja_onboarding.ts
+@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
+ 
+ export const jaOnboarding: TranslationOverrides['onboarding'] = {
+   headerTitle: 'MISAKA AGENT のセットアップをしましょう',
++  providerSetupHint: 'MISAKA AGENT はまだモデルに接続されていません。ローカルモデル、OAuth、API を選択するか、後で設定できます。',
+   headerDesc: 'チャットを始めるにはモデルプロバイダーを接続してください。ほとんどのオプションはワンクリックです。',
+   preparingInstall: 'MISAKA AGENT はインストールを完了中です。初回実行では通常 1 分以内に完了します。',
+   starting: 'MISAKA AGENT を起動中…',
+diff --git a/apps/desktop/src/i18n/ru_onboarding.ts b/apps/desktop/src/i18n/ru_onboarding.ts
+index 4bae2e66..e9d0c0a1 100644
+--- a/apps/desktop/src/i18n/ru_onboarding.ts
++++ b/apps/desktop/src/i18n/ru_onboarding.ts
+@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
+ 
+ export const ruOnboarding: TranslationOverrides['onboarding'] = {
+   headerTitle: 'Настроим для вас MISAKA AGENT',
++  providerSetupHint: 'MISAKA AGENT ещё не подключён к модели. Выберите локальную модель, OAuth или API либо настройте подключение позже.',
+   headerDesc: 'Подключите провайдера модели, чтобы начать общение. Большинство вариантов — в один клик.',
+   preparingInstall: 'MISAKA AGENT завершает установку. Обычно это занимает меньше минуты при первом запуске.',
+   starting: 'Запускаем MISAKA AGENT…',
+diff --git a/apps/desktop/src/i18n/types_onboarding.ts b/apps/desktop/src/i18n/types_onboarding.ts
+index 752a736d..fc275d07 100644
+--- a/apps/desktop/src/i18n/types_onboarding.ts
++++ b/apps/desktop/src/i18n/types_onboarding.ts
+@@ -1,5 +1,6 @@
+ export interface OnboardingTranslations {
+   headerTitle: string
++  providerSetupHint: string
+   headerDesc: string
+   preparingInstall: string
+   starting: string
+diff --git a/apps/desktop/src/i18n/zh-hant_boot.ts b/apps/desktop/src/i18n/zh-hant_boot.ts
+index 77059da6..51914f5b 100644
+--- a/apps/desktop/src/i18n/zh-hant_boot.ts
++++ b/apps/desktop/src/i18n/zh-hant_boot.ts
+@@ -282,6 +282,7 @@ export const zhHantBoot = {
+ 
+   onboarding: {
+     headerTitle: '開始設定 MISAKA AGENT',
++    providerSetupHint: 'MISAKA AGENT 尚未連接模型。請選擇本機模型、OAuth 或 API，也可以稍後設定。',
+     headerDesc: '連線模型提供方即可開始聊天。大多數選項只需一次點擊。',
+     preparingInstall: 'MISAKA AGENT 正在完成安裝。首次執行通常不到一分鐘。',
+     starting: '正在啟動 MISAKA AGENT…',
+diff --git a/apps/desktop/src/i18n/zh_onboarding.ts b/apps/desktop/src/i18n/zh_onboarding.ts
+index 8ae03979..ec630f9f 100644
+--- a/apps/desktop/src/i18n/zh_onboarding.ts
++++ b/apps/desktop/src/i18n/zh_onboarding.ts
+@@ -2,6 +2,7 @@ import type { TranslationOverrides } from './define-locale'
+ 
+ export const zhOnboarding: TranslationOverrides['onboarding'] = {
+   headerTitle: '欢迎使用 MISAKA AGENT',
++  providerSetupHint: 'MISAKA AGENT 尚未连接模型。请选择本地模型、OAuth 或 API，也可以稍后配置。',
+   headerDesc: '本地模型、OAuth 或 API，选择适合你的连接方式。云端协同与扩展可以稍后配置。',
+   preparingInstall: 'MISAKA AGENT 正在完成安装。首次运行通常不到一分钟。',
+   starting: '正在启动 MISAKA AGENT…',
+diff --git a/apps/desktop/src/lib/onboarding-guidance.ts b/apps/desktop/src/lib/onboarding-guidance.ts
+new file mode 100644
+index 00000000..90e31d01
+--- /dev/null
++++ b/apps/desktop/src/lib/onboarding-guidance.ts
+@@ -0,0 +1,15 @@
++const NO_PROVIDER = 'Hermes is not connected to any AI provider yet.'
++const CLI_PICKER = ' Run `hermes model` to pick one'
++const RUNTIME_MISMATCH = ' setup.status reports configured credentials, but runtime resolution still failed.'
++
++/** Only the runtime's known blank-install sentences; unrelated caller failures remain visible. */
++export function isMissingProviderReason(reason: string): boolean {
++  const message = reason.endsWith(RUNTIME_MISMATCH) ? reason.slice(0, -RUNTIME_MISMATCH.length) : reason
++
++  return (
++    message === NO_PROVIDER ||
++    message === `${NO_PROVIDER}${CLI_PICKER}.` ||
++    message === `${NO_PROVIDER}${CLI_PICKER}, or \`hermes auth add <provider>\`.` ||
++    /^Hermes is not connected to any AI provider yet\. Run `hermes model` to pick one, type `\/login` in chat, or add a key with `hermes auth add <provider>`\. \(Advanced: put an API key such as OPENROUTER_API_KEY in [^\r\n]+\.env\.\)$/.test(message)
++  )
++}
+diff --git a/apps/desktop/src/store/shared-metrics.ts b/apps/desktop/src/store/shared-metrics.ts
+index 1e02b2e3..8ce13e7d 100644
+--- a/apps/desktop/src/store/shared-metrics.ts
++++ b/apps/desktop/src/store/shared-metrics.ts
+@@ -68,6 +68,24 @@ export async function saveSharedMetricsConsent(
+   return consent
+ }
+ 
++/** MISAKA starts with collection and upload explicitly off. Never replace an existing choice. */
++export async function initializeSharedMetricsOff(
++  request: SharedMetricsRequester,
++  stillCurrent: () => boolean
++): Promise<SharedMetricsConsent | null> {
++  const consent = await readSharedMetricsConsent(request)
++
++  if (!stillCurrent()) {
++    return null
++  }
++
++  if (consent?.decided === false && !consent.reask && consent.enabled === false && consent.send === false) {
++    return saveSharedMetricsConsent(request, SHARED_METRICS_CHOICES.off)
++  }
++
++  return consent
++}
++
+ /**
+  * The focused profile's answer, as last read from the backend by the consent
+  * host. `null` = not asked yet or the backend could not say (never offer then).
+@@ -80,7 +98,8 @@ export const $sharedMetricsDetailsOpen = atom(false)
+ 
+ /** The first-run offer is still unanswered for the focused profile. */
+ export function sharedMetricsOfferPending(consent: SharedMetricsConsent | null): boolean {
+-  return consent?.decided === false
++  // A legacy explicit refusal stays off; MISAKA does not re-ask it for Nous.
++  return consent?.decided === false && consent.reask !== true
+ }
+ 
+ /** Record a first-run answer; the strip and the dialog retire as soon as the backend reports it decided. */
