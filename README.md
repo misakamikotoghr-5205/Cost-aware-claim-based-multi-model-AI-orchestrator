@@ -1,10 +1,10 @@
-# Cost-Aware Claim-Based Multi-Model AI Orchestrator
+# MISAKA AGENT
 
-> A **cost-aware, quota-aware, claim-based, weighted-voting** multi-model AI
-> orchestrator. It does not always reach for the strongest model — it picks the
-> best **cost/performance** path across GPT, Claude, Gemini, Grok, Codex and
-> DeepSeek based on task type, model capability, remaining quota, price, failure
-> risk and output quality.
+One desktop client for local OAuth/API conversations, optional cloud-to-local
+collaboration, account quota, and a compact smart pointer. MISAKA AGENT retains
+the complete pinned Hermes native runtime and adds a cost-aware multi-model
+orchestrator. A portable Agent Skill connects other compatible agents to the
+same runtime, quota Dashboard and paired nodes.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -30,8 +30,9 @@ model is saved for the task only it can do.
 
 ### Current implementation
 
-The desktop is based on the **complete native Hermes Electron client** at a
-locked upstream revision. Conversations, streaming, history, approvals, Skills,
+The desktop presents **MISAKA AGENT**, its own icons, welcome screen and draft
+suggestions, on the complete native Hermes Electron client at a locked revision.
+Conversations, streaming, history, approvals, Skills,
 MCP, tools, profiles and provider OAuth/API settings remain upstream features.
 The earlier Tk task form is retained only with `--legacy`.
 
@@ -43,16 +44,20 @@ separate installable extension ZIPs.** They are delivered together, not preinsta
 | Capability | Status |
 |---|---|
 | Offline scoring, claims, voting, role assignment and shadow prices | Implemented; deterministic |
-| Native Hermes desktop and upstream features | Whole upstream retained; narrow native region-capture patch |
+| MISAKA AGENT desktop and upstream features | Native identity, icons, welcome screen and preserved Hermes runtime |
+| Integrated quota Dashboard | Codex/Claude OAuth windows and OpenRouter/DeepSeek API balances; other or unavailable observations remain unknown |
 | Hermes / DeepSeek Harness / Ollama / restricted MCP execution | Implemented; tested with real fixture subprocesses and loopback HTTP |
 | Free-model discovery | Separate installation package; explicit online refresh, TTL cache and JSON import |
-| Local judgment and smart pointer | Separate packages; local model setup and intent-to-draft workflow |
+| Local judgment and smart pointer | Separate packages; bounded judgement and a top-right compact intent-to-draft window |
+| Portable Agent Skill | Independent ZIP; native private gateway tickets, quota, routing, optional extensions and shared fleet controls |
 | Atomic quota reservations, explicit units and unknown-outcome holds | Implemented; real provider entitlement requires observed account data |
 | One cloud and multiple local nodes | Pairing, revocable tokens, capability routing, workspaces and receipts |
-| Real subscription/GUI/Computer Use deployment acceptance | Not performed in this development environment |
+| Real-machine acceptance | Linux native GUI, local judgement, package lifecycle and loopback fleet checked; real account/Office deployment requires its actual host and credentials |
 
 See [desktop setup](docs/desktop.md), [cloud/local runtime](docs/cloud-local.md)
 and [ROADMAP.md](ROADMAP.md) for scope and validation limits.
+Windows and Ubuntu build, extension and Skill instructions are also available in
+the [Chinese quick start](docs/misaka-quickstart.zh-CN.md).
 
 ## Desktop quick start
 
@@ -64,6 +69,7 @@ python -m src.desktop
 The launcher prepares/builds the pinned native source using its locked tooling.
 See [native setup](docs/native-client.md) for prerequisites and native build
 commands. OAuth/API authentication stays in Hermes's native provider settings.
+The default MISAKA profile is `~/.misaka-agent`. Cloud use is optional.
 Build all optional packages together, then install only the ZIPs you want:
 
 ```bash
@@ -73,6 +79,18 @@ python scripts/build_extensions.py --ids all --upstream /path/to/pinned/hermes
 Uninstalled extensions contribute no UI, hooks, screenshot capture or inference.
 Local model weights are downloaded explicitly when requested, rather than being
 presented as bundled weights. See [extension setup](docs/native-extensions.md).
+
+For other agents, build the independent standard Skill and copy its folder into
+the host's Skills directory; see [installation and supported commands](docs/agent-skill.md):
+
+```bash
+python scripts/build_agent_skill.py
+```
+
+The Skill reuses the selected MISAKA runtime. It carries no provider credentials,
+does not install optional extensions, and does not replace the host agent's
+permission policy. See [quota Dashboard](docs/quota-dashboard.md) and
+[compact pointer](docs/smart-pointer.md) for the desktop interface.
 
 The advanced, account-free protocol fixture exercises real local HTTP, file
 execution, quota reservation and independent verification:
@@ -184,18 +202,23 @@ Issues and PRs welcome. Never include real keys/tokens in issues or logs.
 
 ### 当前实现状态
 
-桌面以 **Hermes 完整原生 Electron 客户端**为基础，保留原生聊天、历史、工具、
-Skills、MCP、审批、多 profile 和 OAuth/API 配置。无需云端也可独立使用。
-云端支持配对多台本地机，账户身份与节点身份分离。
+**MISAKA AGENT** 以 Hermes 完整原生 Electron 客户端为基础，使用自己的名称、图标、
+开屏和建议，保留原生聊天、历史、工具、Skills、MCP、审批、多 profile 和 OAuth/API 配置。
+无需云端也可独立使用；云端支持配对多台本地机，账户身份与节点身份分离。
+集成 Dashboard 展示账号额度和云端工作配额，无法观测的数据保持未知。
 
 **判断模型、免费/限免模型发现、智能指针分别交付独立扩展 ZIP**，用户按需安装、启用、
 卸载；不再是预装功能的三个开关。智能指针从选区与关键词给出意图候选，支持补词换一批，
-选定后进入原生聊天草稿，由用户确认发送。模型权重按需下载，不默认启动模型或读取屏幕。
+开启指针后隐藏主窗，只保留右上角关键词小框；选定后进入原生聊天草稿，由用户确认发送。
+模型权重按需下载，不默认启动模型或读取屏幕。另有独立标准 Agent Skill，可让 Claude Code、
+Codex、Hermes 等宿主调用同一套运行时、额度查询和节点任务。
 
 已实现 Hermes/DeepSeek Harness/Ollama/受限 MCP 适配、客户端评分、原子额度预留、
 云端任务领取及租约、独立验收和未知结果保留。离线集成测试使用真实子进程和本机 HTTP；
-真实订阅登录、Windows/Ubuntu 真机桌面、Computer Use 等部署验收尚未完成，不能当作
-已经实测。详见 [桌面客户端](docs/desktop.md) 与 [云端本地配置](docs/cloud-local.md)。
+Linux/X11 原生 GUI、本地小模型回复、判断模型、独立包生命周期和 Skill 正向任务链已实际运行；
+Windows 图形界面和捕获的结论以本次平台报告为准。真实订阅首次登录、Office 编辑及跨物理机部署需要对应账号和环境。
+安装与使用见 [Windows / Ubuntu 中文快速开始](docs/misaka-quickstart.zh-CN.md)、
+[桌面客户端](docs/desktop.md) 与 [云端本地配置](docs/cloud-local.md)。
 
 ```bash
 python -m pip install -r requirements.txt

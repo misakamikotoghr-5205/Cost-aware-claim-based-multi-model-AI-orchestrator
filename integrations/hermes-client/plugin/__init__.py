@@ -21,11 +21,11 @@ def register(ctx):
 
         @property
         def display_name(self):
-            return "Local deterministic orchestrator"
+            return "本机确定性调度器"
 
         @property
         def summary(self):
-            return "Optional scoring and installed local extensions; native Hermes executes the child."
+            return "按需评分并调用已安装扩展，子任务仍由原生客户端执行。"
 
         def task_parameters(self, config):
             return {"task_type": {"type": "string", "enum": ["general", "code_generation", "research", "writing", "multimodal"]},

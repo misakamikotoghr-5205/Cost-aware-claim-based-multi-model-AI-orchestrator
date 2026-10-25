@@ -3,7 +3,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { cropRegion, imagePoint, RevisionGate, sameScope } from './selection'
 import { localApi } from '../../../../plugin/desktop/src/local-api'
-const mocks = vi.hoisted(() => ({ insert: vi.fn(async () => true), submit: vi.fn(), attach: vi.fn(async () => true), profile: 'default', connection: 'cloud', session: 'chat-one' }))
+import { localApi as judgeApi } from '../../../local-judge/desktop/src/local-api'
+import { localApi as freeApi } from '../../../free-models/desktop/src/local-api'
+import { localApi as pointerApi } from './local-api'
+const mocks = vi.hoisted(() => ({ insert: vi.fn(async () => true), submit: vi.fn(), attach: vi.fn(async () => true), notify: vi.fn(), profile: 'default', connection: 'cloud', session: 'chat-one' }))
 vi.mock('@hermes/plugin-sdk', async () => {
   const React = await import('react')
   return { Button: ({ variant, size, children, ...props }: any) => React.createElement('button', props, children),
@@ -16,15 +19,16 @@ vi.mock('@hermes/plugin-sdk', async () => {
       focusedStoredSessionId: { get: () => mocks.session }, focusedSessionId: { get: () => mocks.session },
       focusedSessionProfile: { get: () => mocks.profile }, connectionId: { get: () => mocks.connection },
       focusedSessionOwner: { get: () => ({ connectionId: mocks.connection, profile: mocks.profile }) }
-    }, composer: { insertText: mocks.insert, submit: mocks.submit, attachImages: mocks.attach }, revealPane: vi.fn() } }
+    }, composer: { insertText: mocks.insert, submit: mocks.submit, attachImages: mocks.attach }, notifyError: mocks.notify, revealPane: vi.fn() } }
 })
-import { PointerPane } from './plugin'
+import pointerPlugin, { PointerPane } from './plugin'
 import { ClientPage } from '../../../../plugin/desktop/src/plugin'
 import { JudgeSettingsPage } from '../../../local-judge/desktop/src/plugin'
+import { DiscoveryPage } from '../../../free-models/desktop/src/plugin'
 const ctx = { storage: { get: (_: string, fallback: unknown) => fallback }, rest: vi.fn() } as any
 const captured = { status: 'ok', imageDataUrl: 'data:image/png;base64,aGVsbG8=', width: 1000, height: 500 }
 beforeEach(() => {
-  mocks.insert.mockClear(); mocks.submit.mockClear(); mocks.attach.mockClear(); mocks.connection = 'cloud'; mocks.profile = 'default'; mocks.session = 'chat-one'
+  mocks.insert.mockClear(); mocks.submit.mockClear(); mocks.attach.mockClear(); mocks.notify.mockClear(); mocks.connection = 'cloud'; mocks.profile = 'default'; mocks.session = 'chat-one'
   Object.defineProperty(window, 'PointerEvent', { value: MouseEvent, configurable: true }); Element.prototype.setPointerCapture = vi.fn()
   vi.spyOn(HTMLImageElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, width: 200, height: 100, top: 0, left: 0, right: 200, bottom: 100, toJSON() {} })
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as any)
@@ -37,14 +41,38 @@ async function selectRegion() {
   fireEvent.pointerDown(target, { button: 0, clientX: 10, clientY: 10, pointerId: 1 })
   fireEvent.pointerMove(target, { clientX: 80, clientY: 50, pointerId: 1 }); fireEvent.pointerUp(target, { clientX: 80, clientY: 50, pointerId: 1 })
   expect(await screen.findByAltText('已圈选区域预览')).toBeTruthy()
-  fireEvent.change(screen.getByLabelText('选区原文 / 表格数据（可粘贴）'), { target: { value: '原文示例' } })
+  fireEvent.change(screen.getByRole('textbox', { name: '选区原文 / 表格数据（可粘贴）' }), { target: { value: '原文示例' } })
 }
 it('machine operations stay local while active chat is cloud; unavailable bridge fails closed', async () => {
   const api = vi.fn(async () => ({ online: true })); (window as any).hermesDesktop = { api }
   await localApi('work')('/worker/start', { method: 'POST', body: {} })
   expect(api).toHaveBeenCalledWith({ path: '/api/plugins/orchestrator-core/worker/start', method: 'POST', body: {}, connectionId: 'local', profile: 'work', priority: 'foreground' })
   expect(ctx.rest).not.toHaveBeenCalled(); delete (window as any).hermesDesktop
-  await expect(localApi('work')('/worker/start')).rejects.toThrow('本机 Hermes 代理不可用')
+  await expect(localApi('work')('/worker/start')).rejects.toThrow('本机代理不可用')
+})
+it.each([
+  { name: 'core', makeApi: localApi, entry: '/extensions' },
+  { name: 'judge', makeApi: judgeApi, entry: '/setup' },
+  { name: 'free models', makeApi: freeApi, entry: '/models' },
+  { name: 'pointer', makeApi: pointerApi, entry: '/sessions' }
+])('$name explains unloaded static entries without misdiagnosing missing resources or restarting', async ({ makeApi, entry }) => {
+  const api = vi.fn(); (window as any).hermesDesktop = { api }
+  const request = makeApi('work')
+  api.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { statusCode: 404 }))
+  await expect(request('/settings?reload=1')).rejects.toThrow(/在原生插件页启用.*重启对应本机代理，再重新连接/)
+  api.mockRejectedValueOnce(new Error("Error invoking remote method 'api': Error: 404: Not Found"))
+  await expect(request(entry)).rejects.toThrow(/在原生插件页启用.*重启对应本机代理，再重新连接/)
+  for (const path of ['/tasks/missing', '/sessions/missing/commit', '/models/pull/missing', '/nodes/missing/revoke']) {
+    const failure = new Error('404: Resource no longer exists'); api.mockRejectedValueOnce(failure)
+    await expect(request(path)).rejects.toBe(failure)
+  }
+  for (const failure of [Object.assign(new Error('401: Unauthorized'), { statusCode: 401 }),
+    new Error('500: A remote diagnostic mentioned 404: missing')]) {
+    api.mockRejectedValueOnce(failure)
+    await expect(request('/settings')).rejects.toBe(failure)
+  }
+  expect(api).toHaveBeenCalledTimes(8)
+  expect(api.mock.calls.every(([value]) => value.connectionId === 'local' && value.profile === 'work')).toBe(true)
 })
 it('crop scales reverse drag to exact pixels and keeps newer revisions/source ownership', () => {
   const point = imagePoint({ x: 110, y: 60 }, { x: 10, y: 10, width: 200, height: 100 }, { width: 1000, height: 500 })
@@ -59,9 +87,11 @@ it('capture -> crop -> multiple choices -> preview -> exact composer draft, with
     : { executed: false, draft_prompt: '请整理选中的段落，先给出修改建议。' })
   ;(window as any).hermesDesktop = { api, regionCapture: { capture: async () => captured } }
   render(createElement(PointerPane, { ctx })); await selectRegion(); fireEvent.click(screen.getByText('生成多个候选'))
-  fireEvent.click(await screen.findByText('整理段落 — 整理文档')); await screen.findByText('聊天草稿预览')
+  fireEvent.click(await screen.findByText('整理段落 — 整理文档'))
+  const preview = await screen.findByRole('textbox', { name: '聊天草稿预览' })
+  fireEvent.change(preview, { target: { value: '请按正式文体整理原文示例。' } })
   expect(mocks.insert).not.toHaveBeenCalled(); fireEvent.click(screen.getByText('确认加入聊天草稿'))
-  await waitFor(() => expect(mocks.insert).toHaveBeenCalledWith('chat-one', '请整理选中的段落，先给出修改建议。\n\n选区原文 / 表格数据：\n原文示例', { mode: 'block' }))
+  await waitFor(() => expect(mocks.insert).toHaveBeenCalledWith('chat-one', '请按正式文体整理原文示例。', { mode: 'block' }))
   expect(mocks.submit).not.toHaveBeenCalled(); expect(mocks.attach).not.toHaveBeenCalled(); expect(JSON.stringify(api.mock.calls)).not.toContain('base64')
   expect(api.mock.calls[0][0].body.context.region).toEqual({ x: 50, y: 50, width: 350, height: 200 })
 })
@@ -112,8 +142,65 @@ it('model weights are requested only after install click and progress reaches ba
   await waitFor(() => expect((screen.getByText('安装所选本地模型') as HTMLButtonElement).disabled).toBe(false))
   expect(api.mock.calls.some(([request]) => request.path.includes('/models/pull'))).toBe(false)
   fireEvent.click(screen.getByText('安装所选本地模型'))
-  await waitFor(() => expect(screen.getByText(/"status": "complete"/)).toBeTruthy())
+  await waitFor(() => expect(screen.getByText('本机模型下载完成')).toBeTruthy())
   expect(api.mock.calls.find(([request]) => request.path.endsWith('/models/pull'))![0].body).toEqual({ model: 'qwen3:4b' })
+})
+it.each(['cancelled', 'failed'])('download %s is explained in Chinese without exposing raw machine fields', async status => {
+  const api = vi.fn(async (request: any) => {
+    if (request.path.endsWith('/settings')) return { base_url: 'http://127.0.0.1:11434', model: 'qwen3:4b', timeout: 5, max_task_chars: 512, max_candidates: 3 }
+    if (request.path.endsWith('/models/pull')) return { job_id: 'download', status: 'queued', model: 'qwen3:4b', progress: 0 }
+    return { job_id: 'download', status, model: 'qwen3:4b', progress: .4, error: 'URLError', detail: 'Waiting for local Ollama' }
+  })
+  ;(window as any).hermesDesktop = { api }
+  const scoped = { ...ctx, setTimeout: (callback: () => void) => { let active = true; Promise.resolve().then(() => { if (active) callback() }); return () => { active = false } } }
+  render(createElement(JudgeSettingsPage, { ctx: scoped }))
+  await waitFor(() => expect((screen.getByText('安装所选本地模型') as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByText('安装所选本地模型'))
+  await screen.findByText(status === 'cancelled'
+    ? '已停止跟踪下载，服务端安装可能仍在继续；请重新检测本机模型状态。' : '下载未确认完成，请重新检测本机模型状态。')
+  expect(screen.getByText('下载进度：40%')).toBeTruthy()
+  expect(screen.queryByText(/URLError|Waiting for local Ollama|"job_id"|"status"/)).toBeNull()
+  expect(screen.getByText('模型：qwen3:4b')).toBeTruthy()
+})
+
+it('free model refresh presents Chinese billing and a truthful partial-source summary', async () => {
+  const config = { ollama_url: 'http://127.0.0.1:11434', ollama: true, openrouter: true, ttl_seconds: 900 }
+  const api = vi.fn(async (request: any) => {
+    if (request.path.endsWith('/settings')) return config
+    if (request.path.endsWith('/models')) return { models: [] }
+    if (request.path.endsWith('/refresh')) return { models: [{ model_id: 'open/model-a', provider: 'openrouter', billing_mode: 'free', available: true }],
+      events: [{ kind: 'added' }], errors: [{ source: 'ollama', error: 'URLError' }], complete: false }
+    throw new Error('Unexpected request')
+  })
+  ;(window as any).hermesDesktop = { api }
+  render(createElement(DiscoveryPage, { ctx }))
+  await waitFor(() => expect((screen.getByText('现在联网刷新') as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByText('现在联网刷新'))
+  expect(await screen.findByText(/刷新已结束，部分来源未完成。当前发现 1 个模型。/)).toBeTruthy()
+  expect(screen.getByText('OpenRouter · 免费 · 发现源可用')).toBeTruthy()
+  expect(screen.getByRole('status').textContent).toContain('新增 1 个，更新 0 个，移除 0 个。')
+  expect(screen.getByRole('status').textContent).toContain('Ollama 未返回有效结果')
+  expect(screen.queryByText(/URLError|"events"|"billing_mode"/)).toBeNull()
+  expect(api.mock.calls.find(([request]) => request.path.endsWith('/refresh'))![0]).toMatchObject({ method: 'POST', connectionId: 'local', profile: 'default', body: {} })
+})
+
+it('native screen capture errors are translated before they reach the pointer pane', async () => {
+  const api = vi.fn()
+  ;(window as any).hermesDesktop = { api, regionCapture: { capture: async () => ({ status: 'unsupported', message: 'The selected screen could not be captured.' }) } }
+  render(createElement(PointerPane, { ctx }))
+  fireEvent.click(screen.getByText('开始圈选'))
+  expect((await screen.findByRole('alert')).textContent).toContain('无法获取所选屏幕，请检查系统截图权限。')
+  expect(screen.queryByText(/The selected screen/)).toBeNull()
+  expect(api).not.toHaveBeenCalled()
+})
+
+it('a native pointer launch failure uses a Chinese toast and the full SDK notification signature', async () => {
+  ;(window as any).hermesDesktop = { pointerCompact: { open: async () => { throw new Error('ECONNREFUSED') } } }
+  const register = vi.fn()
+  pointerPlugin.register({ register } as any)
+  const command = register.mock.calls.find(([entry]) => entry.area === 'palette')![0]
+  await command.data.run()
+  expect(mocks.notify).toHaveBeenCalledWith('暂时无法连接服务，请检查本机代理、模型运行时或网络后重试。', '智能指针未能打开')
 })
 it('native screen crop is ready for intent generation without forcing a second drag', async () => {
   ;(window as any).hermesDesktop = { api: vi.fn(), regionCapture: { capture: async () => ({ ...captured, selectionMode: 'screen-region', region_already_cropped: true }) } }
@@ -128,7 +215,7 @@ it('keyword edits discard preview, disable old actions and send only the new del
     candidates: [{ action_id: 'format', label: '整理', description: '按关键词整理', preview_prompt: '请整理' }] }))
   ;(window as any).hermesDesktop = { api, regionCapture: { capture: async () => captured } }
   render(createElement(PointerPane, { ctx })); await selectRegion()
-  fireEvent.change(screen.getByLabelText('关键词'), { target: { value: '整理' } }); fireEvent.click(screen.getByText('生成多个候选'))
+  fireEvent.change(screen.getByRole('textbox', { name: '关键词' }), { target: { value: '整理' } }); fireEvent.click(screen.getByText('生成多个候选'))
   fireEvent.click(await screen.findByText('整理 — 按关键词整理'))
   expect(screen.getByText('确认加入聊天草稿')).toBeTruthy()
   fireEvent.change(screen.getByLabelText('关键词'), { target: { value: '摘要' } })
@@ -181,4 +268,54 @@ it('revoking image consent while final commit waits invalidates delivery before 
   await act(async () => finishCommit({ draft_prompt: '请分析选区', executed: false }))
   expect(mocks.attach).not.toHaveBeenCalled(); expect(mocks.insert).not.toHaveBeenCalled()
   expect(screen.queryByText('确认加入聊天草稿')).toBeNull()
+})
+
+it('opening smart pointer asks the native compact host to hide chat using the exact focused route', async () => {
+  const open = vi.fn(async () => ({ ok: true })), register = vi.fn()
+  ;(window as any).hermesDesktop = { pointerCompact: { context: null, open } }
+  pointerPlugin.register({ ...ctx, register })
+  const command = register.mock.calls.map(([value]) => value).find(value => value.area === 'palette')
+  await command.data.run()
+  expect(open).toHaveBeenCalledWith({ sessionId: 'chat-one', profile: 'default', connectionId: 'cloud' })
+  expect(mocks.submit).not.toHaveBeenCalled()
+})
+
+it('compact UI pins owner scope and hands confirmed draft plus opted-in crop to original renderer', async () => {
+  const handoff = vi.fn(async () => ({ ok: true }))
+  const scope = { sessionId: 'original-chat', profile: 'work', connectionId: 'original-cloud' }
+  const api = vi.fn(async (request: any) => request.path.endsWith('/sessions')
+    ? { session_id: 'compact-session', revision: 1, candidates: [{ action_id: 'polish', label: '润色', description: '更清楚', preview_prompt: '请润色' }] }
+    : { draft_prompt: '请润色', executed: false })
+  ;(window as any).hermesDesktop = { api, pointerCompact: { context: { generation: 'g', scope }, handoff },
+    regionCapture: { capture: async () => ({ ...captured, region_already_cropped: true }) } }
+  render(createElement(PointerPane, { ctx }))
+  expect(screen.getByRole('textbox', { name: '关键词' })).toBeTruthy()
+  expect(screen.queryByLabelText('附上所选区域图片')).toBeNull()
+  fireEvent.change(screen.getByRole('textbox', { name: '关键词' }), { target: { value: '润色' } })
+  fireEvent.click(screen.getByText('开始圈选')); await screen.findByAltText('已圈选区域预览')
+  expect((screen.getByRole('textbox', { name: '关键词' }) as HTMLInputElement).value).toBe('润色')
+  fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('润色 — 更清楚'))
+  expect(handoff).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByLabelText('附上所选区域图片'))
+  fireEvent.click(screen.getByText('确认加入聊天草稿'))
+  await waitFor(() => expect(handoff).toHaveBeenCalledWith({ generation: 'g', scope, text: '请润色', imageDataUrl: captured.imageDataUrl }))
+  expect(mocks.insert).not.toHaveBeenCalled(); expect(mocks.attach).not.toHaveBeenCalled(); expect(mocks.submit).not.toHaveBeenCalled()
+  expect(JSON.stringify(api.mock.calls)).not.toContain('base64')
+  expect(await screen.findByText('草稿和选区图片已就绪。返回聊天检查后发送。')).toBeTruthy()
+})
+
+it('compact handoff failure preserves the draft and never reports success', async () => {
+  const handoff = vi.fn(async () => ({ ok: false, message: '原聊天已改变' }))
+  const api = vi.fn(async (request: any) => request.path.endsWith('/sessions')
+    ? { session_id: 'compact-session', revision: 1, candidates: [{ action_id: 'polish', label: '润色', description: '更清楚', preview_prompt: '请润色' }] }
+    : { draft_prompt: '请润色', executed: false })
+  ;(window as any).hermesDesktop = { api, pointerCompact: { context: { generation: 'g', scope: { sessionId: 'new', profile: 'default', connectionId: 'local' } }, handoff },
+    regionCapture: { capture: async () => ({ ...captured, region_already_cropped: true }) } }
+  render(createElement(PointerPane, { ctx })); fireEvent.click(screen.getByText('开始圈选')); await screen.findByAltText('已圈选区域预览')
+  fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('润色 — 更清楚'))
+  fireEvent.click(screen.getByLabelText('附上所选区域图片')); fireEvent.click(screen.getByText('确认加入聊天草稿'))
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('原聊天已改变'))
+  fireEvent.click(screen.getByText('预览操作草稿'))
+  expect(screen.getByRole('textbox', { name: '聊天草稿预览' })).toHaveProperty('value', '请润色')
+  expect(screen.queryByText('草稿和选区图片已就绪。返回聊天检查后发送。')).toBeNull()
 })

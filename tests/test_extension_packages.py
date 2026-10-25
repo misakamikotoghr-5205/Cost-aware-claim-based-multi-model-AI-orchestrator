@@ -8,12 +8,56 @@ from pathlib import Path
 import stat
 import sys
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src import extension_packages as ep
 from scripts import prepare_native_client as prep
+
+
+def test_native_client_bootstrap_enables_only_its_core_through_official_launcher(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    assert prep.initialize_profile(profile)
+    original = (profile / "config.yaml").read_bytes()
+    calls = []
+    monkeypatch.setattr(prep.subprocess, "run", lambda command, **options: calls.append((command, options)) or SimpleNamespace(returncode=0))
+    launcher = tmp_path / "native" / "hermes.exe"
+    result = prep.enable_client_core(tmp_path, profile, {"launcher": str(launcher)})
+    assert result == {"enabled": True, "changed": True}
+    assert len(calls) == 1
+    assert calls[0][0] == [str(launcher.resolve()), "--profile", "default", "plugins", "enable", "orchestrator-core"]
+    assert calls[0][1]["env"]["HERMES_HOME"] == str(profile.resolve())
+    assert calls[0][1]["env"]["HERMES_INSTALL_ROOT"] == str(tmp_path.resolve())
+    assert calls[0][1]["check"] is True and calls[0][1]["shell"] is False
+    assert (profile / "config.yaml").read_bytes() == original
+
+
+@pytest.mark.parametrize("core_name", ["orchestrator-core", "user/orchestrator-core"])
+def test_native_client_bootstrap_keeps_explicit_core_disable_and_optional_choices(tmp_path, monkeypatch, core_name):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    state = {"plugins": {"enabled": ["smart-pointer"], "disabled": [core_name, "local-judge"]}, "display": {"language": "zh"}}
+    path = profile / "config.yaml"
+    path.write_text(json.dumps(state), encoding="utf8")
+    original = path.read_bytes()
+    monkeypatch.setattr(prep.subprocess, "run", lambda *args, **kwargs: pytest.fail("Explicit disable must not be overwritten"))
+    assert prep.enable_client_core(tmp_path, profile, {"launcher": str(tmp_path / "hermes.exe")}) == {
+        "enabled": False, "changed": False, "reason": "explicitly-disabled"}
+    assert path.read_bytes() == original
+
+
+def test_native_client_bootstrap_does_not_execute_for_enabled_or_invalid_preferences(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    path = profile / "config.yaml"
+    monkeypatch.setattr(prep.subprocess, "run", lambda *args, **kwargs: pytest.fail("No native activation should run"))
+    path.write_text(json.dumps({"plugins": {"enabled": ["orchestrator-core"]}}), encoding="utf8")
+    assert prep.enable_client_core(tmp_path, profile, {"launcher": str(tmp_path / "hermes.exe")}) == {"enabled": True, "changed": False}
+    path.write_text('plugins: []\n', encoding="utf8")
+    with pytest.raises(ep.ExtensionError):
+        prep.enable_client_core(tmp_path, profile, {"launcher": str(tmp_path / "hermes.exe")})
 
 
 def source(tmp_path, package_id=ep.CORE_ID, version="0.1.0", text="value = 'initial'\n"):
@@ -293,6 +337,36 @@ def test_prepare_accepts_only_exact_already_applied_patch(tmp_path, autocrlf):
     assert (checkout / "base.txt").read_text() == "patched\n"
 
 
+def test_native_patch_upgrade_uses_new_cache_without_resetting_old_source(tmp_path):
+    import subprocess
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=origin, check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    (origin / "base.txt").write_bytes(b"base\n")
+    git("add", "base.txt")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base")
+    spec = {"commit": git("rev-parse", "HEAD"), "repository": str(origin)}
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    patch = patches / "0001.patch"
+    header = b"diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n"
+    patch.write_bytes(header + b"+first\n")
+    old = prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", patch_dir=patches)
+    old_bytes = (old / "new.txt").read_bytes()
+    patch.write_bytes(header + b"+second\n")
+    new = prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", patch_dir=patches)
+    assert old != new
+    assert (old / "new.txt").read_bytes() == old_bytes
+    assert (old / "new.txt").read_text(encoding="utf-8") == "first\n"
+    assert (new / "new.txt").read_text(encoding="utf-8") == "second\n"
+    assert prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", patch_dir=patches) == new
+    with pytest.raises(ep.ExtensionError, match="changed"):
+        prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", upstream=old, patch_dir=patches)
+    assert (old / "new.txt").read_bytes() == old_bytes
+
+
 def test_inventory_never_follows_nested_payload_symlink(tmp_path):
     root = source(tmp_path)
     (root / "nested").mkdir()
@@ -329,6 +403,16 @@ def test_runtime_environment_isolates_home_and_store_and_preserves_network(tmp_p
     assert env['HERMES_RUNTIME_DIR'] == str(tmp_path / 'chosen-home/tools')
     assert all(name not in env for name in ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV'])
     assert env['HTTPS_PROXY'] == 'http://test-proxy.invalid:8080'
+
+
+def test_new_profile_waits_for_provider_choice_and_preserves_existing_config(tmp_path):
+    profile = tmp_path / "misaka"
+    assert prep.initialize_profile(profile) is True
+    assert json.loads((profile / "config.yaml").read_text()) == {"nous": {"guest": False}, "onboarding": {"run": False}}
+    existing = b"nous:\n  guest: true\nmodel:\n  provider: custom\n"
+    (profile / "config.yaml").write_bytes(existing)
+    assert prep.initialize_profile(profile) is False
+    assert (profile / "config.yaml").read_bytes() == existing
 
 
 def test_runtime_bootstrap_is_default_and_skip_still_probes_actual_resolver(tmp_path, monkeypatch):

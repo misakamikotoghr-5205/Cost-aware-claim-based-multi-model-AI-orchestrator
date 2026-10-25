@@ -1,6 +1,6 @@
 name: free-models
-version: 0.1.0
-description: Optional independently installed free-models extension for orchestrator-core.
-author: Orchestrator contributors
+version: 0.2.1
+description: 按需安装的免费模型发现扩展，可显式刷新公开目录与本机模型。
+author: MISAKA AGENT 贡献者
 requires_plugins:
   - orchestrator-core

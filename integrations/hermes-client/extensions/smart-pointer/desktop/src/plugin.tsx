@@ -1,6 +1,6 @@
 import { Button, ErrorState, Input, Loader, SegmentedControl, Switch, Textarea, host,
   PANES_AREA, PALETTE_AREA, type HermesPlugin, type PluginContext } from '@hermes/plugin-sdk'
-import { localApi } from './local-api'
+import { localApi, localError } from './local-api'
 import { useEffect, useRef, useState, type PointerEvent } from 'react'
 import { cropRegion, imagePoint, RevisionGate, sameScope, type ComposerScope, type Point, type Region } from './selection'
 
@@ -10,11 +10,20 @@ interface NativeCapture { capture(): Promise<Capture | { status: 'cancelled' | '
 interface Candidate { action_id: string; label: string; description: string; preview_prompt: string }
 interface IntentSession { session_id: string; revision: number; candidates: Candidate[]; question?: string | null; keywords?: string }
 type Kind = 'auto' | 'document' | 'spreadsheet' | 'unknown'
-const scope = (): ComposerScope => ({ sessionId: host.state.focusedStoredSessionId.get() ?? host.state.focusedSessionId.get() ?? 'new',
+interface CompactBridge {
+  context: { generation: string; scope: ComposerScope } | null
+  open(scope: ComposerScope): Promise<{ ok: boolean; message?: string }>
+  close(): Promise<boolean>
+  handoff(payload: { generation: string; scope: ComposerScope; text: string; imageDataUrl?: string }): Promise<{ ok: boolean; message?: string }>
+}
+const compactBridge = () => (window as unknown as { hermesDesktop?: { pointerCompact?: CompactBridge } }).hermesDesktop?.pointerCompact
+const sourceLabel = (name = '') => /^entire screen$/i.test(name) ? '整个屏幕' : name.replace(/^Screen\s*(\d+)$/i, '屏幕 $1')
+const scope = (): ComposerScope => compactBridge()?.context?.scope ?? ({ sessionId: host.state.focusedStoredSessionId.get() ?? host.state.focusedSessionId.get() ?? 'new',
   profile: host.state.focusedSessionOwner.get()?.profile ?? host.state.focusedSessionProfile.get(), connectionId: host.state.focusedSessionOwner.get()?.connectionId ?? host.state.connectionId.get() })
 const CSS = `.pointer-pane{padding:16px;display:flex;flex-direction:column;gap:16px;color:var(--ui-text-primary);height:100%;overflow:auto}.pointer-pane p{color:var(--ui-text-secondary);font-size:12px;margin:0}.pointer-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.pointer-image{position:relative;line-height:0;touch-action:none;user-select:none;cursor:crosshair;width:100%}.pointer-image img{display:block;width:100%;height:auto;pointer-events:none}.pointer-region{position:absolute;border:2px solid var(--ui-accent);background:var(--ui-bg-quaternary);opacity:.45;pointer-events:none}.pointer-intents{display:grid;gap:8px}.pointer-intents button{white-space:normal;text-align:left;justify-content:flex-start;height:auto}.pointer-chips{display:flex;gap:6px;flex-wrap:wrap}.pointer-preview{max-height:180px;object-fit:contain}.pointer-label{font-size:12px;font-weight:600}.pointer-pane textarea{min-height:110px}`
 
 export function PointerPane({ ctx }: { ctx: PluginContext }) {
+  const compact = compactBridge()?.context
   const [localProfile, setLocalProfile] = useState(() => ctx.storage.get('local-profile', 'default'))
   const [profileInput, setProfileInput] = useState(localProfile)
   const api = localApi(localProfile)
@@ -31,6 +40,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
   const [selectedAction, setSelectedAction] = useState('')
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [delivering, setDelivering] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const image = useRef<HTMLImageElement>(null)
@@ -55,11 +65,11 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
 
   async function loadLocalSettings() {
     try { const config = await api<{ local_suggestions: typeof localSettings }>('/settings'); setLocalSettings(config.local_suggestions) }
-    catch (failure) { setError(String(failure)) }
+    catch (failure) { setError(localError(failure)) }
   }
   async function saveLocalSettings() {
     try { const config = await api<{ local_suggestions: typeof localSettings }>('/settings', { method: 'POST', body: { local_suggestions: localSettings } }); setLocalSettings(config.local_suggestions); invalidate(); setNotice('本地意图建议设置已保存，旧候选已清除。') }
-    catch (failure) { setError(String(failure)) }
+    catch (failure) { setError(localError(failure)) }
   }
 
   async function beginCapture() {
@@ -76,8 +86,8 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
         if (!result.imageDataUrl.startsWith('data:image/png;base64,') || result.width <= 0 || result.height <= 0) throw new Error('截图格式无效')
         setCapture(result); setKind('auto')
         if (result.region_already_cropped === true) { setRegion({ x: 0, y: 0, width: result.width, height: result.height }); setCrop(result.imageDataUrl) }
-      } else if (result.status !== 'cancelled') setError(result.message || '系统暂不允许截图，请检查屏幕录制权限。')
-    } catch (failure) { if (gate.current.accepts(generation)) setError(String(failure)) }
+      } else if (result.status !== 'cancelled') setError(localError(result.message || '系统暂不允许截图，请检查屏幕录制权限。'))
+    } catch (failure) { if (gate.current.accepts(generation)) setError(localError(failure)) }
     finally { if (gate.current.accepts(generation)) setBusy(false) }
   }
 
@@ -119,7 +129,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
           app: capture.appContext?.appName || '', window_title: capture.appContext?.windowTitle || '',
           sourceName: capture.appContext?.sourceName || '', region, region_id: crypto.randomUUID() } } })
       if (gate.current.accepts(generation)) { setSession(result); setKeywords(''); setDirty(false) }
-    } catch (failure) { if (gate.current.accepts(generation)) setError(String(failure)) }
+    } catch (failure) { if (gate.current.accepts(generation)) setError(localError(failure)) }
     finally { if (gate.current.accepts(generation)) setBusy(false) }
   }
 
@@ -138,9 +148,21 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
       if (!gate.current.accepts(generation)) return
       if (committed.executed !== false || typeof committed.draft_prompt !== 'string') throw new Error('候选没有返回可确认的草稿。')
       if (!sameScope(address.current, scope())) throw new Error('聊天或连接已切换，请返回原聊天后再添加草稿。')
+      if (compact) {
+        const bridge = compactBridge()
+        if (!bridge) throw new Error('原生浮框连接已关闭。')
+        setDelivering(true)
+        const result = await bridge.handoff({ generation: compact.generation, scope: address.current,
+          text: draft, ...(attachImage && crop ? { imageDataUrl: crop } : {}) })
+        if (!gate.current.accepts(generation)) return
+        if (!result.ok) throw new Error(result.message || '原聊天没有确认接收，草稿仍保留在浮框。')
+        setNotice(attachImage ? '草稿和选区图片已就绪。返回聊天检查后发送。' : '草稿已就绪。返回聊天检查后发送。')
+        setSession(null); setDraft(''); setSelectedAction(''); setAttachImage(false)
+        return
+      }
       if (attachImage && crop && (!attached.current || attached.current.image !== crop || !sameScope(attached.current.scope, address.current))) {
         const attach = host.composer.attachImages
-        if (typeof attach !== 'function') throw new Error('当前 Hermes 版本不支持向草稿添加图片。请更新，或粘贴选区原文。')
+        if (typeof attach !== 'function') throw new Error('当前客户端版本不支持向草稿添加图片。请更新，或粘贴选区原文。')
         const bytes = Uint8Array.from(atob(crop.slice(crop.indexOf(',') + 1)), char => char.charCodeAt(0))
         if (bytes.byteLength > 8 * 1024 * 1024) throw new Error('选区图片超过 8 MiB，请缩小圈选区域。')
         const accepted = await attach(address.current.sessionId, [new Blob([bytes], { type: 'image/png' })])
@@ -152,15 +174,54 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
       const inserted = await host.composer.insertText(address.current.sessionId, draft, { mode: 'block' })
       if (!inserted) setError('当前聊天输入框未就绪，草稿仍保留在此处。')
       else { setNotice(attachImage ? '草稿和所选区域图片已加入原生聊天。请检查后在聊天中发送。' : '含选区原文的草稿已加入原生聊天。请检查后发送。'); setSession(null); setDraft(''); setSelectedAction(''); setAttachImage(false); attached.current = null }
-    } catch (failure) { if (gate.current.accepts(generation)) setError(String(failure)) }
-    finally { if (gate.current.accepts(generation)) setBusy(false) }
+    } catch (failure) { if (gate.current.accepts(generation)) setError(localError(failure)) }
+    finally { setDelivering(false); if (gate.current.accepts(generation)) setBusy(false) }
   }
+
+  if (compact) return <div style={{ height: '100%', overflow: 'auto' }}><section data-pointer-content className="pointer-pane pointer-compact" aria-label="智能指针浮框"><style>{CSS + `.pointer-compact{height:auto;padding:10px;gap:8px;overflow:visible}.pointer-compact p{font-size:11px}.pointer-compact .pointer-preview{max-height:64px;width:100%;object-fit:contain}.pointer-compact textarea{min-height:64px;font-size:12px}.pointer-compact .pointer-label{font-size:11px}.pointer-compact .pointer-image{max-height:140px;overflow:auto}.pointer-compact .pointer-row{gap:6px;flex-wrap:nowrap}.pointer-compact details{font-size:11px}.pointer-compact details[open]{display:flex;flex-direction:column;gap:7px}.pointer-compact .pointer-intents button{padding:7px;font-size:12px;line-height:1.4}.pointer-compact summary{cursor:pointer;color:var(--ui-text-secondary)}`}</style>
+    <div className="pointer-row"><Button size="sm" disabled={busy} onClick={beginCapture}>{capture ? '重新圈选' : '开始圈选'}</Button>
+      <Input style={{ flex: 1, minWidth: 0 }} aria-label="关键词" value={keywords} onChange={event => editKeywords(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); void propose() } }} placeholder={session ? '补充关键词，再换一批' : '输入关键词，例如：润色'} /></div>
+    {busy && <Loader label={delivering ? '正在加入原聊天草稿' : '正在准备候选'} />}
+    {error && <ErrorState title="暂时无法继续" description={error}><Button size="sm" onClick={() => setError('')}>返回操作</Button></ErrorState>}
+    {!capture && <p>圈选一块区域，输入你想做的事。</p>}
+    {capture && <details><summary>选区 {region ? `${region.width} × ${region.height}` : '尚未裁剪'} · 预览与环境</summary>
+      {!capture.region_already_cropped && <div className="pointer-image" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp}>
+        <img ref={image} src={capture.imageDataUrl} alt="本机截图，拖动以圈选" draggable={false} />
+        {region && <div className="pointer-region" style={{ left: `${region.x / capture.width * 100}%`, top: `${region.y / capture.height * 100}%`, width: `${region.width / capture.width * 100}%`, height: `${region.height / capture.height * 100}%` }} />}</div>}
+      {crop && <img className="pointer-preview" src={crop} alt="已圈选区域预览" />}
+      <SegmentedControl<Kind> value={kind} options={[{ id: 'auto', label: '自动' }, { id: 'document', label: '文档' }, { id: 'spreadsheet', label: '表格' }, { id: 'unknown', label: '其他' }]} onChange={value => { invalidate(); setKind(value) }} />
+      <p>{capture.appContext?.windowTitle || sourceLabel(capture.appContext?.sourceName) || '应用未知，可手动选择环境。'}</p></details>}
+    {capture && <Button size="sm" disabled={!region || busy} onClick={() => propose()}>{session ? '追加关键词 / 换一批' : '生成多个候选'}</Button>}
+    {session?.keywords && <p>累计关键词：{session.keywords}</p>}
+    {session?.question && <p role="status">{session.question}</p>}
+    {dirty && session && <p>关键词已修改，请先换一批。</p>}
+    {session && !draft && <div className="pointer-intents">{session.candidates.map(candidate => <Button key={candidate.action_id} variant="secondary" disabled={busy || dirty} onClick={() => choose(candidate)}>{candidate.label} — {candidate.description}</Button>)}</div>}
+    {draft && <><details><summary>预览操作草稿</summary><Textarea aria-label="聊天草稿预览" value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} /></details>
+      <div className="pointer-row"><Switch aria-label="附上所选区域图片" disabled={delivering} checked={attachImage} onCheckedChange={enabled => { gate.current.next(); setAttachImage(enabled); if (busy) { setBusy(false); setSession(null); setDraft(''); setSelectedAction('') } }} /><span style={{ fontSize: 11 }}>确认后附上选区图片</span></div>
+      <details><summary>粘贴选区原文 / 表格数据</summary><Textarea aria-label="选区原文 / 表格数据（可粘贴）" value={selectedText} disabled={busy} onChange={event => {
+        gate.current.next(); const value = event.target.value; setSelectedText(value)
+        const original = session?.candidates.find(item => item.action_id === selectedAction)?.preview_prompt || draft.split('\n\n选区原文 / 表格数据：')[0]
+        setDraft(original + (value.trim() ? '\n\n选区原文 / 表格数据：\n' + value.trim() : '')); setError(''); setNotice('')
+      }} placeholder="不附图时，请粘贴要处理的内容。" /></details>
+      <div className="pointer-row"><Button size="sm" disabled={busy || dirty || (!attachImage && !selectedText.trim())} onClick={insertDraft}>确认加入聊天草稿</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setDraft(''); setSelectedAction('') }}>重选</Button></div>
+      {!attachImage && !selectedText.trim() && <p>请粘贴原文，或明确选择附上选区图片。</p>}</>}
+    {notice && <p role="status">{notice}</p>}
+    <details><summary>设置</summary><p>截图留在本机，候选不上传图片。确认仅加入草稿。</p>
+      <Input aria-label="本机配置名称" value={profileInput} onChange={event => setProfileInput(event.target.value)} />
+      <Button size="sm" disabled={busy || !profileInput.trim()} onClick={() => { try { localApi(profileInput.trim()); ctx.storage.set('local-profile', profileInput.trim()); setLocalProfile(profileInput.trim()); invalidate(); setNotice('本机代理已切换，请重新生成候选。') } catch (failure) { setError(localError(failure)) } }}>连接此本机代理</Button>
+      <div className="pointer-row"><span>本机模型建议</span><Switch aria-label="启用本机意图建议" checked={localSettings.enabled} onCheckedChange={enabled => setLocalSettings(value => ({ ...value, enabled }))} /></div>
+      <Input aria-label="本机 Ollama 地址" value={localSettings.base_url} onChange={event => setLocalSettings(value => ({ ...value, base_url: event.target.value }))} />
+      <Input aria-label="本地模型" value={localSettings.model} onChange={event => setLocalSettings(value => ({ ...value, model: event.target.value }))} />
+      <Input aria-label="超时（秒）" type="number" min={0.05} max={5} step={0.05} value={localSettings.timeout} onChange={event => setLocalSettings(value => ({ ...value, timeout: Number(event.target.value) }))} />
+      <div className="pointer-row"><Button size="sm" onClick={loadLocalSettings}>读取设置</Button><Button size="sm" onClick={saveLocalSettings}>保存建议设置</Button></div>
+    </details>
+  </section></div>
 
   return <section className="pointer-pane" aria-label="智能指针"><style>{CSS}</style>
     <div className="pointer-row"><strong>智能指针</strong><Button size="sm" onClick={beginCapture} disabled={busy}>开始圈选</Button>
       <Button size="sm" variant="ghost" onClick={() => { invalidate(); setCapture(null); setRegion(null); setCrop(''); setSelectedText(''); setAttachImage(false); attached.current = null; address.current = null }}>清除</Button></div>
-    <label className="pointer-label">本机代理 profile<Input value={profileInput} onChange={event => setProfileInput(event.target.value)} /></label>
-    <Button size="sm" variant="secondary" disabled={busy || !profileInput.trim()} onClick={() => { try { localApi(profileInput.trim()); ctx.storage.set('local-profile', profileInput.trim()); setLocalProfile(profileInput.trim()); invalidate(); setCapture(null); setCrop(''); setRegion(null); setSelectedText(''); setAttachImage(false); attached.current = null; address.current = null } catch (failure) { setError(String(failure)) } }}>连接此本机代理</Button>
+    <label className="pointer-label">本机配置名称<Input value={profileInput} onChange={event => setProfileInput(event.target.value)} /></label>
+    <Button size="sm" variant="secondary" disabled={busy || !profileInput.trim()} onClick={() => { try { localApi(profileInput.trim()); ctx.storage.set('local-profile', profileInput.trim()); setLocalProfile(profileInput.trim()); invalidate(); setCapture(null); setCrop(''); setRegion(null); setSelectedText(''); setAttachImage(false); attached.current = null; address.current = null } catch (failure) { setError(localError(failure)) } }}>连接此本机代理</Button>
     <p>截图只保留在内存。请在图片内拖动圈选；候选只生成草稿，发送由你确认。</p>
     <details onToggle={event => { if (event.currentTarget.open) loadLocalSettings() }}><summary>本地意图建议（可选）</summary>
       <div className="pointer-row"><span>本机模型建议</span><Switch aria-label="启用本机意图建议" checked={localSettings.enabled} onCheckedChange={enabled => setLocalSettings(value => ({ ...value, enabled }))} /></div>
@@ -179,14 +240,14 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
     </div>
     {crop && <img className="pointer-preview" src={crop} alt="已圈选区域预览" />}
     <div className="pointer-label">操作环境</div>
-    <SegmentedControl<Kind> value={kind} options={[{ id: 'auto', label: '自动识别' }, { id: 'document', label: 'Word / 文档' },
-      { id: 'spreadsheet', label: 'Excel / 表格' }, { id: 'unknown', label: '其他' }]} onChange={value => { invalidate(); setKind(value) }} />
-    <p>{capture.appContext?.windowTitle || capture.appContext?.sourceName || '系统未提供应用标题，可手动选择环境。'}</p>
-    <label className="pointer-label">关键词<Input value={keywords} onChange={event => editKeywords(event.target.value)} placeholder="例如：整理、公式、翻译、检查" /></label>
+    <SegmentedControl<Kind> value={kind} options={[{ id: 'auto', label: '自动识别' }, { id: 'document', label: '文档（Word）' },
+      { id: 'spreadsheet', label: '表格（Excel）' }, { id: 'unknown', label: '其他' }]} onChange={value => { invalidate(); setKind(value) }} />
+    <p>{capture.appContext?.windowTitle || sourceLabel(capture.appContext?.sourceName) || '系统未提供应用标题，可手动选择环境。'}</p>
+    <label className="pointer-label">关键词<Input aria-label="关键词" value={keywords} onChange={event => editKeywords(event.target.value)} placeholder="例如：整理、公式、翻译、检查" /></label>
     <div className="pointer-chips">{['整理', '检查', '翻译', '解释', '公式', '格式'].map(keyword => <Button key={keyword} variant="outline" size="xs"
       onClick={() => editKeywords([keywords, keyword].filter(Boolean).join(' '))}>{keyword}</Button>)}</div>
     <div className="pointer-row"><Button disabled={!region || busy} onClick={() => propose()}> {session ? '追加关键词 / 换一批' : '生成多个候选'} </Button></div>
-    <label className="pointer-label">选区原文 / 表格数据（可粘贴）<Textarea value={selectedText} disabled={busy} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction(''); if (busy) setSession(null); setBusy(false) }} placeholder="不发送图片时，请在这里粘贴要处理的原文或表格内容。" /></label>
+    <label className="pointer-label">选区原文 / 表格数据（可粘贴）<Textarea aria-label="选区原文 / 表格数据（可粘贴）" value={selectedText} disabled={busy} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction(''); if (busy) setSession(null); setBusy(false) }} placeholder="不发送图片时，请在这里粘贴要处理的原文或表格内容。" /></label>
     <div className="pointer-row"><Switch aria-label="附上所选区域图片" checked={attachImage} onCheckedChange={enabled => {
       gate.current.next(); setAttachImage(enabled)
       if (busy) { setBusy(false); setSession(null); setDraft(''); setSelectedAction('') }
@@ -197,7 +258,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
     {session?.question && <p role="status">{session.question}</p>}
     {session && <div className="pointer-intents">{session.candidates.map(candidate => <Button key={candidate.action_id} variant={selectedAction === candidate.action_id ? 'default' : 'secondary'} aria-pressed={selectedAction === candidate.action_id} disabled={busy || dirty}
       onClick={() => choose(candidate)}>{candidate.label} — {candidate.description}</Button>)}</div>}
-    {draft && <><label className="pointer-label">聊天草稿预览<Textarea value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} /></label>
+    {draft && <><label className="pointer-label">聊天草稿预览<Textarea aria-label="聊天草稿预览" value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} /></label>
       <Button onClick={insertDraft} disabled={busy || dirty || (!attachImage && !selectedText.trim())}>确认加入聊天草稿</Button><p>请提供选区原文或明确勾选附图，确保会话模型能看到要处理的内容。此扩展不会自动发送聊天。</p></>}
     {notice && <p role="status">{notice}</p>}
     </>}
@@ -208,6 +269,11 @@ export default { id: 'smart-pointer', name: '智能指针', description: '圈选
   register(ctx) {
     ctx.register({ id: 'pane', area: PANES_AREA, title: '智能指针', data: { placement: 'right', width: '390px' }, render: () => <PointerPane ctx={ctx} /> })
     ctx.register({ id: 'open', area: PALETTE_AREA, data: { id: 'smart-pointer.open', label: '打开智能指针',
-      run: () => host.revealPane('smart-pointer:pane') } })
+      run: async () => {
+        const bridge = compactBridge()
+        if (!bridge) { host.notifyError('请更新客户端以使用智能指针浮框。', '智能指针未能打开'); return }
+        try { const result = await bridge.open(scope()); if (!result.ok) host.notifyError(localError(result.message || '无法打开智能指针浮框。'), '智能指针未能打开') }
+        catch (failure) { host.notifyError(localError(failure), '智能指针未能打开') }
+      } } })
   }
 } satisfies HermesPlugin

@@ -1,0 +1,177 @@
+diff --git a/apps/desktop/src/sdk/index.ts b/apps/desktop/src/sdk/index.ts
+index 1a126f4d..6fd810d2 100644
+--- a/apps/desktop/src/sdk/index.ts
++++ b/apps/desktop/src/sdk/index.ts
+@@ -110,6 +110,7 @@ import type { SessionMutationSnapshot } from '../../../shared/src/session-http-m
+ import { pluginDecisions, profiles, skills, toolsets } from './bridge'
+ import { composerHost } from './composer'
+ import { i18nHost } from './i18n'
++import { openLocalProviderSettings } from './local-provider-settings'
+ import { planPluginOpenSession } from './plugin-open-session-plan'
+ import {
+   type PluginProfileRequestOptions,
+@@ -124,6 +125,7 @@ import { $viewport, type ViewportRect } from './viewport'
+ 
+ /** Pane, status bar and titlebar slots; see `./areas` for the mount rules. */
+ export * from './areas'
++export type { LocalProviderSettingsRoute } from './local-provider-settings'
+ /** The plugin authoring contract (`HermesPlugin`, `PluginContext`, `ctx.*` door types). */
+ export type * from './plugin-contract'
+ export type { PluginProfileRequestOptions, PluginProfileRoute } from './profile-request'
+@@ -825,6 +827,9 @@ export const host = {
+   ensureAgent: async (connectionId: null | string | undefined, profile: string): Promise<void> =>
+     ensureGatewayAgent(connectionId ?? null, (profile ?? '').trim() || 'default'),
+ 
++  /** Open native Accounts for an explicit local profile, replacing any old settings scope. */
++  openLocalProviderSettings,
++
+   /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
+   sessions: sessionsHost,
+ 
+diff --git a/apps/desktop/src/sdk/local-provider-settings.test.ts b/apps/desktop/src/sdk/local-provider-settings.test.ts
+new file mode 100644
+index 00000000..0f3373c6
+--- /dev/null
++++ b/apps/desktop/src/sdk/local-provider-settings.test.ts
+@@ -0,0 +1,93 @@
++import { beforeEach, expect, it, vi } from 'vitest'
++
++const mocks = vi.hoisted(() => ({ ensure: vi.fn(), navigate: vi.fn() }))
++vi.mock('@/store/profile', async () => {
++  const { atom } = await import('nanostores')
++
++  return {
++    $activeGatewayProfile: atom('work'),
++    $profiles: atom([{ name: 'default', is_default: true }, { name: 'work' }]),
++    normalizeProfileKey: (value: string | null | undefined) => value?.trim() || 'default',
++    ensureGatewayAgent: mocks.ensure
++  }
++})
++vi.mock('@/store/session', async () => {
++  const { atom } = await import('nanostores')
++
++  return { $connection: atom({ mode: 'local', connectionId: 'local' }) }
++})
++vi.mock('@/app/routes', () => ({ syncWorkspaceRoute: mocks.navigate }))
++
++import { $activeGatewayProfile } from '@/store/profile'
++import { $connection } from '@/store/session'
++import { $settingsRequestProfile, $settingsScopeOverride, setSettingsScope } from '@/store/settings-scope'
++
++import { openLocalProviderSettings } from './local-provider-settings'
++
++beforeEach(() => {
++  mocks.ensure.mockReset(); mocks.navigate.mockReset()
++  $activeGatewayProfile.set('work')
++  $connection.set({ mode: 'local', connectionId: 'local' } as any)
++  setSettingsScope('other-profile')
++  window.location.hash = ''
++})
++
++it('replaces a stale settings override even when activating the same local profile', async () => {
++  mocks.ensure.mockResolvedValue(undefined) // Same profile: no atom notification clears the old override.
++  expect($settingsRequestProfile.get()).toBe('other-profile')
++  await openLocalProviderSettings({ connectionId: 'local', profile: 'work' })
++  expect(mocks.ensure).toHaveBeenCalledWith('local', 'work', undefined)
++  expect($settingsScopeOverride.get()).toBeNull()
++  expect($settingsRequestProfile.get()).toBe('work')
++  expect(window.location.hash).toBe('#/settings?tab=providers&pview=accounts')
++  expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith('/settings?tab=providers&pview=accounts')
++})
++
++it('does not navigate or change settings scope after failed or non-landing activation', async () => {
++  $connection.set({ mode: 'remote', connectionId: 'cloud' } as any)
++  mocks.ensure.mockResolvedValue(undefined)
++  await expect(openLocalProviderSettings({ connectionId: 'local', profile: 'work' })).rejects.toThrow('did not activate')
++  expect($settingsRequestProfile.get()).toBe('other-profile')
++  expect(window.location.hash).toBe('')
++  expect(mocks.navigate).not.toHaveBeenCalled()
++  $connection.set({ mode: 'local', connectionId: 'local' } as any)
++  $activeGatewayProfile.set('default'); setSettingsScope('other-profile')
++  await expect(openLocalProviderSettings({ connectionId: 'local', profile: 'work' })).rejects.toThrow('did not activate')
++  expect($settingsRequestProfile.get()).toBe('other-profile')
++  mocks.ensure.mockRejectedValueOnce(new Error('local unavailable'))
++  await expect(openLocalProviderSettings({ connectionId: 'local', profile: 'work' })).rejects.toThrow('local unavailable')
++  expect($settingsRequestProfile.get()).toBe('other-profile')
++})
++
++it('refuses implicit or remote routes before activating an agent', async () => {
++  for (const route of [{ connectionId: 'cloud', profile: 'work' }, { connectionId: 'local', profile: '' },
++    { connectionId: 'local', profile: '../other' }, { profile: 'work' }, null]) {
++    await expect(openLocalProviderSettings(route as any)).rejects.toThrow('explicit local connection and profile')
++  }
++
++  expect(mocks.ensure).not.toHaveBeenCalled()
++  expect(mocks.navigate).not.toHaveBeenCalled()
++  expect($settingsRequestProfile.get()).toBe('other-profile')
++})
++
++it('a late earlier request cannot replace the newer settings profile', async () => {
++  let finishFirst: () => void = () => undefined
++  mocks.ensure.mockImplementationOnce(() => new Promise<void>(resolve => { finishFirst = resolve }))
++    .mockImplementationOnce(async () => { $activeGatewayProfile.set('default') })
++  const first = openLocalProviderSettings({ connectionId: 'local', profile: 'work' })
++  await openLocalProviderSettings({ connectionId: 'local', profile: 'default' })
++  expect($settingsRequestProfile.get()).toBe('default')
++  finishFirst(); await first
++  expect($settingsRequestProfile.get()).toBe('default')
++  expect(mocks.navigate).toHaveBeenCalledTimes(1)
++})
++
++it('cancelled user navigation does not replace scope or open settings after activation waits', async () => {
++  let finish: () => void = () => undefined
++  mocks.ensure.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
++  const controller = new AbortController()
++  const opening = openLocalProviderSettings({ connectionId: 'local', profile: 'work', signal: controller.signal })
++  controller.abort(); finish(); await opening
++  expect($settingsRequestProfile.get()).toBe('other-profile')
++  expect(mocks.navigate).not.toHaveBeenCalled()
++})
+diff --git a/apps/desktop/src/sdk/local-provider-settings.ts b/apps/desktop/src/sdk/local-provider-settings.ts
+new file mode 100644
+index 00000000..52f47c71
+--- /dev/null
++++ b/apps/desktop/src/sdk/local-provider-settings.ts
+@@ -0,0 +1,42 @@
++import { syncWorkspaceRoute } from '@/app/routes'
++import { $activeGatewayProfile, ensureGatewayAgent, normalizeProfileKey } from '@/store/profile'
++import { $connection } from '@/store/session'
++import { setSettingsScope } from '@/store/settings-scope'
++
++export interface LocalProviderSettingsRoute {
++  connectionId: 'local'
++  profile: string
++  signal?: AbortSignal
++}
++
++let settingsIntent = 0
++
++/** Explicit local account navigation; never inherits a remote chat or stale settings override. */
++export async function openLocalProviderSettings(route: LocalProviderSettingsRoute): Promise<void> {
++  const intent = ++settingsIntent
++
++  if (route?.connectionId !== 'local' || typeof route.profile !== 'string' || !route.profile.trim() || /[\\/\0]/.test(route.profile)) {
++    throw new Error('Local provider settings require an explicit local connection and profile')
++  }
++
++  const profile = normalizeProfileKey(route.profile)
++
++  if (route.signal?.aborted) {return}
++  await ensureGatewayAgent('local', profile, route.signal ? { signal: route.signal } : undefined)
++
++  if (intent !== settingsIntent || route.signal?.aborted) {return}
++
++  // Activation can return without landing when its source disappears. Do not
++  // navigate credentials settings while the renderer still owns another source.
++  if ($connection.get()?.mode !== 'local' || normalizeProfileKey($activeGatewayProfile.get()) !== profile) {
++    throw new Error('The selected local agent did not activate; provider settings were not opened')
++  }
++
++  // The shared settings override survives a no-op profile publication. Always
++  // replace it, including when the selected active profile did not change.
++  setSettingsScope(profile)
++
++  const path = '/settings?tab=providers&pview=accounts'
++  window.location.hash = `#${path}`
++  syncWorkspaceRoute(path)
++}

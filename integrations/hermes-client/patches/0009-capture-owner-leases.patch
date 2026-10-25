@@ -1,0 +1,237 @@
+diff --git a/apps/desktop/electron/region-capture-controller.ts b/apps/desktop/electron/region-capture-controller.ts
+index a8c624ee..3ae7c11b 100644
+--- a/apps/desktop/electron/region-capture-controller.ts
++++ b/apps/desktop/electron/region-capture-controller.ts
+@@ -13,7 +13,7 @@ export interface RegionCaptureImage {
+ }
+ 
+ interface RegionCaptureDependencies {
+-  listSources(): Promise<RegionCaptureSource[]>
++  listSources(signal: AbortSignal): Promise<RegionCaptureSource[]>
+   chooseSource(sources: RegionCaptureSource[], owner: number, signal: AbortSignal): Promise<string | null>
+   captureSource(id: string, owner: number, signal: AbortSignal): Promise<RegionCaptureImage | null>
+   selectRegion?(
+@@ -102,7 +102,7 @@ export function createRegionCaptureController(deps: RegionCaptureDependencies) {
+         active === token && generation === token.generation && now() < token.expires && !token.abort.signal.aborted
+ 
+       try {
+-        const sources = await runCaptureStage(token.abort.signal, () => deps.listSources())
++        const sources = await runCaptureStage(token.abort.signal, () => deps.listSources(token.abort.signal))
+ 
+         if (!current()) {
+           return { status: 'cancelled' }
+@@ -203,6 +203,9 @@ export function createRegionCaptureController(deps: RegionCaptureDependencies) {
+         if (active === token) {
+           active = null
+         }
++
++        // End native leases on success and failure as well as cancellation.
++        token.abort.abort()
+       }
+     }
+   }
+diff --git a/apps/desktop/electron/region-capture.test.ts b/apps/desktop/electron/region-capture.test.ts
+index 9c5a4801..884fc064 100644
+--- a/apps/desktop/electron/region-capture.test.ts
++++ b/apps/desktop/electron/region-capture.test.ts
+@@ -67,7 +67,7 @@ function setup() {
+   const dispose = installRegionCapture({ rendererUrl: 'file:///app/index.html' })
+   const invoke = native.handlers.get(channel)!
+ 
+-  return { contents, dispose, event: { sender: contents, senderFrame: contents.mainFrame }, invoke }
++  return { contents, win, dispose, event: { sender: contents, senderFrame: contents.mainFrame }, invoke }
+ }
+ 
+ beforeEach(() => {
+@@ -77,6 +77,7 @@ beforeEach(() => {
+ 
+ afterEach(() => {
+   native.handlers.clear()
++  vi.useRealTimers()
+ })
+ 
+ describe('Region capture native boundary', () => {
+@@ -163,4 +164,73 @@ describe('Region capture native boundary', () => {
+     expect(result.appContext.appName).toBeUndefined()
+     dispose()
+   })
++
++  it('an old cancelled enumeration cannot replace the new capture display binding', async () => {
++    const { invoke, event, contents, dispose } = setup()
++    let finishOldList!: (sources: unknown[]) => void
++    let finishNewChoice!: (result: { response: number }) => void
++    native.getSources.mockImplementationOnce(() => new Promise(resolve => { finishOldList = resolve }))
++      .mockResolvedValueOnce([{ id: 'screen:1:0', name: 'New screen', display_id: '7' }])
++      .mockResolvedValueOnce([{ id: 'screen:1:0', name: 'New screen', display_id: '7', thumbnail: image }])
++    native.showMessageBox.mockImplementationOnce(() => new Promise(resolve => { finishNewChoice = resolve }))
++    const first = invoke(event)
++    await vi.waitFor(() => expect(native.getSources).toHaveBeenCalledTimes(1))
++    contents.emit('did-start-navigation', {}, 'file:///app/index.html', false, true)
++    expect(await first).toEqual({ status: 'cancelled' })
++    const second = invoke(event)
++    await vi.waitFor(() => expect(native.showMessageBox).toHaveBeenCalledTimes(1))
++    finishOldList([{ id: 'screen:1:0', name: 'Old screen', display_id: '8' }])
++    await Promise.resolve(); await Promise.resolve()
++    finishNewChoice({ response: 1 })
++    expect(await second).toMatchObject({ status: 'ok', width: 2000, height: 1000 })
++    expect(native.getSources).toHaveBeenCalledTimes(3)
++    dispose()
++  })
++
++  it('cancelling while the window settles prevents any later pixel acquisition', async () => {
++    vi.useFakeTimers()
++    const { invoke, event, contents, win, dispose } = setup()
++    let visible = true
++    vi.spyOn(win, 'isVisible').mockImplementation(() => visible)
++    win.hide.mockImplementation(() => { visible = false })
++    win.showInactive.mockImplementation(() => { visible = true })
++    const pending = invoke(event)
++    await vi.waitFor(() => expect(win.hide).toHaveBeenCalledOnce(), { interval: 1, timeout: 50 })
++    contents.emit('did-start-navigation', {}, 'file:///app/index.html', false, true)
++    expect(await pending).toEqual({ status: 'cancelled' })
++    await vi.advanceTimersByTimeAsync(120)
++    expect(native.getSources.mock.calls.map(([options]) => options.thumbnailSize.width)).toEqual([0])
++    expect(win.showInactive).toHaveBeenCalledOnce()
++    expect(visible).toBe(true)
++    dispose()
++  })
++
++  it('an older request finishing metadata cannot restore a newer request hidden window', async () => {
++    vi.useFakeTimers()
++    const { invoke, event, win, dispose } = setup()
++    let visible = true
++    vi.spyOn(win, 'isVisible').mockImplementation(() => visible)
++    win.hide.mockImplementation(() => { visible = false })
++    win.showInactive.mockImplementation(() => { visible = true })
++    let finishOldContext!: (result: { window: null; frontmost: null }) => void
++    let finishPixels!: (sources: unknown[]) => void
++    native.readContext.mockImplementationOnce(() => new Promise(resolve => { finishOldContext = resolve }))
++    native.getSources.mockResolvedValueOnce([{ id: 'screen:1:0', name: 'Screen 1' }])
++      .mockImplementationOnce(() => new Promise(resolve => { finishPixels = resolve }))
++    const older = invoke(event)
++    await vi.waitFor(() => expect(native.readContext).toHaveBeenCalledTimes(1), { interval: 1, timeout: 50 })
++    const newer = invoke(event)
++    await vi.waitFor(() => expect(win.hide).toHaveBeenCalledOnce(), { interval: 1, timeout: 50 })
++    await vi.advanceTimersByTimeAsync(120)
++    expect(native.getSources).toHaveBeenCalledTimes(2)
++    finishOldContext({ window: null, frontmost: null })
++    expect(await older).toMatchObject({ status: 'cancelled', message: 'A screen selection is already open.' })
++    expect(win.showInactive).not.toHaveBeenCalled()
++    expect(visible).toBe(false)
++    finishPixels([{ id: 'screen:1:0', name: 'Screen 1', thumbnail: image }])
++    expect(await newer).toMatchObject({ status: 'ok' })
++    expect(win.showInactive).toHaveBeenCalledOnce()
++    expect(visible).toBe(true)
++    dispose()
++  })
+ })
+diff --git a/apps/desktop/electron/region-capture.ts b/apps/desktop/electron/region-capture.ts
+index 9b8b31fc..f9409f70 100644
+--- a/apps/desktop/electron/region-capture.ts
++++ b/apps/desktop/electron/region-capture.ts
+@@ -46,11 +46,15 @@ export function installRegionCapture({
+ }): () => void {
+   const expected = new URL(rendererUrl)
+   const channel = 'hermes:region-capture:capture'
+-  const hiddenOwners = new Set<number>()
++  const hiddenOwners = new Map<number, AbortSignal>()
+   const sourceDisplays = new Map<string, string>()
+ 
+   const controller = createRegionCaptureController({
+-    async listSources() {
++    async listSources(signal) {
++      if (signal.aborted) {
++        return []
++      }
++
+       // Zero-sized thumbnails enumerate screens without retaining their pixels.
+       // Native Wayland may additionally show the compositor's source chooser.
+       const sources = await desktopCapturer.getSources({
+@@ -59,6 +63,10 @@ export function installRegionCapture({
+         fetchWindowIcons: false
+       })
+ 
++      if (signal.aborted) {
++        return []
++      }
++
+       sourceDisplays.clear()
+       sources.forEach(source => {
+         if (source.display_id) {
+@@ -93,26 +101,61 @@ export function installRegionCapture({
+ 
+       return sources[result.response - 1]?.id ?? null
+     },
+-    async captureSource(id, owner) {
++    async captureSource(id, owner, signal) {
++      if (signal.aborted) {
++        return null
++      }
++
++      const expectedDisplay = sourceDisplays.get(id)
+       const win = BrowserWindow.getAllWindows().find(item => item.webContents.id === owner)
+ 
+       if (win?.isVisible()) {
+         // Expose the document underneath the client before freezing the screen.
+-        hiddenOwners.add(owner)
++        // Only this capture's lease may restore it, never another IPC request
++        // from the same renderer that was refused while capture was busy.
++        const restore = () => {
++          signal.removeEventListener('abort', restore)
++
++          if (hiddenOwners.get(owner) !== signal) {
++            return
++          }
++
++          hiddenOwners.delete(owner)
++
++          if (!win.isDestroyed()) {
++            win.showInactive()
++          }
++        }
++
++        hiddenOwners.set(owner, signal)
++        signal.addEventListener('abort', restore, { once: true })
++
++        if (signal.aborted) {
++          restore()
++
++          return null
++        }
++
+         win.hide()
+         await new Promise(resolve => setTimeout(resolve, 120))
+       }
+ 
++      if (signal.aborted) {
++        return null
++      }
++
+       const sources = await desktopCapturer.getSources({
+         types: ['screen'],
+         thumbnailSize: { width: 4096, height: 4096 },
+         fetchWindowIcons: false
+       })
+ 
++      if (signal.aborted) {
++        return null
++      }
++
+       // A disappearing source never falls back to another screen. This also
+       // respects a portal denial or changed source during the second request.
+-      const expectedDisplay = sourceDisplays.get(id)
+-
+       return (
+         sources.find(source => source.id === id && (!expectedDisplay || source.display_id === expectedDisplay))
+           ?.thumbnail ?? null
+@@ -225,10 +268,6 @@ export function installRegionCapture({
+     } finally {
+       metadataAbort.abort()
+ 
+-      if (hiddenOwners.delete(owner) && !win.isDestroyed()) {
+-        win.showInactive()
+-      }
+-
+       event.sender.removeListener('destroyed', cancel)
+       event.sender.removeListener('did-start-navigation', navigate)
+     }

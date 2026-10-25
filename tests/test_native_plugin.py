@@ -70,6 +70,27 @@ def test_core_inactive_keeps_native_route_without_optional_imports(installed):
     assert not any(item["installed"] for item in inventory)
 
 
+def test_chinese_manifests_and_node_grants_use_utf8_under_legacy_windows_locale(installed, monkeypatch):
+    manifest = installed.core / "plugin.yaml"
+    manifest.write_text("name: orchestrator-core\ndescription: 中文扩展说明\n", encoding="utf-8-sig")
+    config = installed.backend.defaults()
+    config["server"]["url"] = "https://fleet.example"
+    config["node"].update(owner_id="owner-test", node_id="node-test")
+    grant = {"server_url": "https://fleet.example", "owner_id": "owner-test", "node_id": "node-test",
+             "token": "fixture-transport-only", "label": "中文节点"}
+    path = installed.backend.state_path(filename="node-grant.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(grant, ensure_ascii=False), encoding="utf-8-sig")
+    original = Path.read_text
+
+    def legacy_read_text(path, encoding=None, errors=None):
+        return original(path, encoding=encoding or "cp1252", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", legacy_read_text)
+    assert installed.backend.read_manifest(manifest)["description"] == "中文扩展说明"
+    assert installed.backend._node_grant(config)["label"] == "中文节点"
+
+
 def test_installed_native_disabled_extension_is_not_loaded(installed, monkeypatch):
     installed.add("local-judge")
     config = installed.backend.defaults()
@@ -156,6 +177,71 @@ def test_core_rest_uses_native_authenticated_router_and_installer(installed, mon
     assert called[0][1]["hermes_home"] == installed.home.resolve()
 
 
+@pytest.mark.parametrize("change", ["url", "token_env", "pool", "same-config-aging"])
+def test_quota_dashboard_get_fences_changed_cloud_cache_without_requests(installed, monkeypatch, change):
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    backend = installed.backend
+    config = backend.defaults()
+    config["server"]["url"] = "https://cloud.example"
+    config["quota_states"] = {"declared": {"account":"subscription", "model":"*"}}
+    backend.write_state(backend.PLUGIN_ID, config)
+    module = backend.load_file(installed.core / "quota_cloud.py", "quota_cloud")
+    at = time.time()-400 if change == "same-config-aging" else time.time()
+    cached = {"configured":True, "configuration_id":module.config_binding(backend), "state":"ready", "source":"fleet-ledger", "accounts":[{
+        "id":"subscription", "state":"ready", "observed_at":at, "windows":[{
+            "id":"*", "state":"ready", "observed_at":at, "expires_at":at+300, "reset_at":None,
+            "remaining":80,"available":75,"held":5,"unit":"requests"}]}]}
+    dashboard = backend._quota_dashboard()
+    dashboard._write({"cloud":cached, "accounts":[], "imports":[]})
+    before = dashboard.path.read_bytes()
+    if change == "pool":config["quota_states"]["declared"]["model"]="different"
+    elif change in {"url","token_env"}:
+        config["server"][change]="https://different.example" if change == "url" else "OTHER_SELECTOR"
+    backend.write_state(backend.PLUGIN_ID,config)
+    monkeypatch.setattr(backend,"_fleet",lambda:pytest.fail("GET dashboard must not resolve credentials or query transport"))
+    api = load(installed.core / "dashboard" / "plugin_api.py", "native_api")
+    app = fastapi.FastAPI(); app.include_router(api.router,prefix="/api/plugins/orchestrator-core")
+    response = testclient.TestClient(app).get("/api/plugins/orchestrator-core/quota/dashboard")
+    assert response.status_code == 200
+    value = response.json()["cloud"]
+    assert value["state"] == "unknown"
+    if change == "same-config-aging":
+        assert value["accounts"][0]["windows"][0]["state"] == "stale"
+        assert value["accounts"][0]["observed_at"] == at
+    else:assert value["accounts"] == []
+    assert dashboard.path.read_bytes() == before
+
+
+def test_external_agent_rest_reuses_native_fleet_gate(installed, monkeypatch):
+    fastapi=pytest.importorskip('fastapi');testclient=pytest.importorskip('fastapi.testclient')
+    api=load(installed.core/'dashboard/plugin_api.py','native_api')
+    app=fastapi.FastAPI();app.include_router(api.router,prefix='/api/plugins/orchestrator-core')
+    client=testclient.TestClient(app)
+    monkeypatch.setattr(installed.backend,'_fleet',lambda:pytest.fail('Disabled exposure cannot resolve fleet access'))
+    result=client.post('/api/plugins/orchestrator-core/agent/fleet',json={'action':'submit','task_id':'stable'}).json()
+    assert result['submitted'] is False and 'Enable' in result['error']
+    config=installed.backend.defaults();config['fleet_tools']['enabled']=True;config['server']['url']='http://127.0.0.1:1'
+    installed.backend.write_state(installed.backend.PLUGIN_ID,config)
+    result=client.post('/api/plugins/orchestrator-core/agent/fleet',json={'action':'list','backend':{}}).json()
+    assert result['submitted'] is False and 'Unknown' in result['error']
+
+
+def test_native_rest_keeps_private_node_leases_out_of_receipts_and_worker_state(installed, monkeypatch):
+    fastapi=pytest.importorskip('fastapi');testclient=pytest.importorskip('fastapi.testclient')
+    api=load(installed.core/'dashboard/plugin_api.py','native_api')
+    private={'task_id':'stable','lease_token':'private-node-lease','result':{'verified':True,'usage':{'prompt_tokens':128}}}
+    monkeypatch.setattr(installed.backend,'_fleet',lambda:types.SimpleNamespace(task=lambda *a:private))
+    monkeypatch.setattr(installed.backend,'worker_status',lambda:{'running':False,'last_result':private})
+    app=fastapi.FastAPI();app.include_router(api.router,prefix='/api/plugins/orchestrator-core')
+    client=testclient.TestClient(app)
+    for path in ('/tasks/stable','/worker'):
+        response=client.get('/api/plugins/orchestrator-core'+path)
+        assert response.status_code==200 and 'private-node-lease' not in response.text
+        assert 'lease_token' not in response.text and 'prompt_tokens' in response.text
+    assert private['lease_token']=='private-node-lease'
+
+
 @pytest.fixture
 def ollama():
     state = {"choice": "second", "fail": False, "calls": [], "remote": False}
@@ -176,7 +262,7 @@ def ollama():
                 return
             assert body["model"] == "judge-local" and body["stream"] is False
             response = "invalid" if state["fail"] else json.dumps({"model_id": state["choice"]})
-            raw = json.dumps({"response": response}).encode()
+            raw = json.dumps({"response": response, "done": True, "done_reason": "stop"}).encode()
             self.send_response(200); self.end_headers(); self.wfile.write(raw)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
@@ -533,3 +619,5 @@ def test_actual_fleet_tool_http_node_mcp_and_verified_receipt(installed, monkeyp
         receipt=json.loads(ctx.tool['handler']({'action':'status','task_id':'native-mcp'}))
         assert receipt['task']['status']=='done'
         assert receipt['task']['result']['verified'] is True
+        assert 'lease_token' not in receipt['task']
+        assert completed['lease_token']  # Native node protocol still owns its original lease.

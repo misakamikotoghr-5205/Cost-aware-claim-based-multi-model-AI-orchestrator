@@ -1,6 +1,6 @@
 name: local-judge
-version: 0.1.0
-description: Optional independently installed local-judge extension for orchestrator-core.
-author: Orchestrator contributors
+version: 0.2.1
+description: 按需安装的本机判断扩展，仅判断任务摘要和少量候选，单候选跳过推理。
+author: MISAKA AGENT 贡献者
 requires_plugins:
   - orchestrator-core

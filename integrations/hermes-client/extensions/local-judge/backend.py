@@ -15,7 +15,8 @@ if _name not in sys.modules:
     _spec.loader.exec_module(_mod)
 core = sys.modules[_name].core
 ID = "local-judge"
-DEFAULTS = {"base_url": "http://127.0.0.1:11434", "model": "qwen3:4b", "timeout": 5}
+DEFAULTS = {"base_url": "http://127.0.0.1:11434", "model": "qwen3:4b", "timeout": 5,
+            "max_task_chars": 512, "max_candidates": 3}
 
 
 def settings():

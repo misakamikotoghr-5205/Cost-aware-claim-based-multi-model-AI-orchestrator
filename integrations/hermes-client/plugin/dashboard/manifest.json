@@ -1,8 +1,8 @@
 {
   "name": "orchestrator-core",
-  "label": "Orchestrator",
-  "description": "Native desktop REST backend",
-  "version": "0.1.0",
+  "label": "云端本地协同",
+  "description": "本机任务、额度与可选云端节点接口。",
+  "version": "0.2.1",
   "tab": {
     "hidden": true
   },

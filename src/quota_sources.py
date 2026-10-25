@@ -33,6 +33,11 @@ def load_normalized_quota(path):
     """
     with Path(path).open("rb") as handle:
         payload = handle.read(1024 * 1024 + 1)
+    return parse_normalized_quota(payload)
+
+
+def parse_normalized_quota(payload):
+    """Validate an already bounded JSON read without reopening a selected file."""
     if len(payload) > 1024 * 1024:
         raise QuotaError("quota JSON exceeds 1 MiB")
     try:

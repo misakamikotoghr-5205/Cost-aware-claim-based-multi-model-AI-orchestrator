@@ -73,9 +73,21 @@ def _matches_patch_tree(checkout, expected):
     return True
 
 
+def cache_checkout(spec, cache_dir, patch_dir=None):
+    """A downstream patch upgrade gets its own source, preserving old checkouts."""
+    digest = hashlib.sha256(spec["commit"].encode())
+    patches = sorted(Path(patch_dir).glob("*.patch")) if patch_dir and Path(patch_dir).is_dir() else []
+    for patch in patches:
+        if patch.is_symlink():
+            raise ExtensionError("native patches must be regular files")
+        digest.update(patch.name.encode())
+        digest.update(hashlib.sha256(patch.read_bytes()).digest())
+    return Path(cache_dir).expanduser().resolve() / ("misaka-" + spec["commit"][:12] + "-" + digest.hexdigest()[:12])
+
+
 def prepare_checkout(*, spec, cache_dir, upstream=None, patch_dir=None):
     commit = spec["commit"]
-    checkout = Path(upstream).expanduser().resolve() if upstream else Path(cache_dir).expanduser().resolve() / ("hermes-" + commit)
+    checkout = Path(upstream).expanduser().resolve() if upstream else cache_checkout(spec, cache_dir, patch_dir)
     if not checkout.exists():
         checkout.parent.mkdir(parents=True, exist_ok=True)
         run(["git", "clone", "--filter=blob:none", "--no-checkout", "--no-tags", "--depth", "1",
@@ -128,6 +140,27 @@ def runtime_environment(hermes_home):
     return env
 
 
+def initialize_profile(hermes_home):
+    """Fresh MISAKA profiles wait for the user's provider choice before inference."""
+    directory = Path(hermes_home).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "config.yaml"
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    payload = json.dumps({"nous": {"guest": False}, "onboarding": {"run": False}}, indent=2).encode() + b"\n"
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return True
+
+
 def runtime_setup_command(checkout, *, windows=None):
     windows = os.name == "nt" if windows is None else windows
     if windows:
@@ -173,9 +206,50 @@ def build_native(checkout, *, skip_deps=False):
     run([npm, "--workspace", "apps/desktop", "run", "build"], cwd=checkout, timeout=1200)
 
 
+def enable_client_core(checkout, hermes_home, runtime):
+    """Admit this client's core through native CLI; retain explicit user denials."""
+    import yaml
+    try:
+        config = yaml.safe_load((Path(hermes_home) / "config.yaml").read_text(encoding="utf-8-sig")) or {}
+        plugins = config.get("plugins")
+        if plugins is None:
+            plugins = {}
+        if not isinstance(plugins, dict):
+            raise ValueError("invalid plugin preferences")
+        enabled, disabled = plugins.get("enabled", []), plugins.get("disabled", [])
+        enabled = [] if enabled is None else enabled
+        disabled = [] if disabled is None else disabled
+        if not all(isinstance(values, list) and all(isinstance(item, str) for item in values)
+                   for values in (enabled, disabled)):
+            raise ValueError("invalid plugin preferences")
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        raise ExtensionError("无法读取本机插件启用偏好，请先修复 config.yaml 后重试。") from None
+
+    def matches(name):
+        return name == "orchestrator-core" or name.endswith(("/orchestrator-core", ":orchestrator-core"))
+
+    if any(matches(name) for name in disabled):
+        return {"enabled": False, "changed": False, "reason": "explicitly-disabled"}
+    if any(matches(name) for name in enabled):
+        return {"enabled": True, "changed": False}
+    launcher = str(Path(runtime["launcher"]).resolve())
+    command = [launcher, "--profile", "default", "plugins", "enable", "orchestrator-core"]
+    via_shell = os.name == "nt" and Path(launcher).suffix.lower() in {".cmd", ".bat"}
+    if via_shell:
+        if any(character in launcher for character in '"%&|<>^\r\n'):
+            raise ExtensionError("Windows 原生启动器路径包含不支持的命令字符。")
+        command = subprocess.list2cmdline(command)
+    environment = runtime_environment(hermes_home)
+    environment["HERMES_INSTALL_ROOT"] = str(Path(checkout).resolve())
+    subprocess.run(command, cwd=checkout, env=environment, shell=via_shell,
+                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   encoding="utf-8", errors="replace", timeout=120)
+    return {"enabled": True, "changed": True}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/orchestrator-native")
+    parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/misaka-agent")
     parser.add_argument("--upstream", type=Path, help="reuse an existing clean checkout of the exact pin")
     parser.add_argument("--hermes-home", type=Path, required=True, help="explicit native profile home; credentials are never copied")
     parser.add_argument("--packages-dir", type=Path, default=ROOT / "dist/extensions")
@@ -186,24 +260,35 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         spec = json.loads((ROOT / "integrations/hermes-client/upstream.json").read_text())
+        print("MISAKA: preparing the pinned native source and patches", file=sys.stderr, flush=True)
         checkout = prepare_checkout(spec=spec, cache_dir=args.cache_dir, upstream=args.upstream,
                                     patch_dir=ROOT / "integrations/hermes-client/patches")
         # SDK compilation and the real resolver probe both consume locked JS dependencies.
+        print("MISAKA: preparing locked desktop dependencies", file=sys.stderr, flush=True)
         install_js_dependencies(checkout, skip_deps=args.skip_deps)
+        initialized = initialize_profile(args.hermes_home)
+        print("MISAKA: preparing the official runtime and probing its launcher", file=sys.stderr, flush=True)
         runtime = prepare_runtime(checkout, args.hermes_home, skip_runtime=args.skip_runtime)
         if args.build:
+            print("MISAKA: building the native desktop", file=sys.stderr, flush=True)
             build_native(checkout, skip_deps=True)
+        print("MISAKA: packaging and installing core; optional packages remain separate", file=sys.stderr, flush=True)
         core = build_one(spec["core_id"], output_dir=args.packages_dir, upstream=checkout)
         installed = ExtensionManager(args.hermes_home, hermes_commit=spec["commit"]).install(core["archive"], replace=True)
+        print("MISAKA: enabling the client core while preserving explicit disable choices", file=sys.stderr, flush=True)
+        activation = enable_client_core(checkout, args.hermes_home, runtime)
         print(json.dumps({"checkout": str(checkout), "core": installed,
+                          "core_activation": activation,
+                          "new_profile_defaults_initialized": initialized,
                           "optional_packages_installed": [], "native_built": args.build, "native_runtime": runtime,
-                          "next": "Launch native Capabilities > Plugins to enable orchestrator-core; install optional ZIPs individually."}, indent=2), flush=True)
+                          "next": "启动后可从侧栏打开额度总览；可选扩展按需安装。明确关闭核心的设置会保留。"}, indent=2), flush=True)
         if args.launch:
             npm = shutil.which("npm")
             if npm is None:
                 raise ExtensionError("npm is not installed")
             env = runtime_environment(args.hermes_home)
             env["HERMES_DESKTOP_HERMES_ROOT"] = str(checkout)
+            env["HERMES_DESKTOP_HERMES"] = runtime["launcher"]
             subprocess.run([npm, "--workspace", "apps/desktop", "run", "start"], cwd=checkout, env=env, check=True)
         return 0
     except (ExtensionError, OSError, subprocess.SubprocessError, ValueError) as exc:

@@ -34,7 +34,8 @@ def serving(server):
 @pytest.fixture
 def stack(tmp_path, monkeypatch):
     effects = []
-    behavior = {"drop_tool_reply": False, "drop_claim_reply": False, "drop_complete_reply": False}
+    behavior = {"drop_tool_reply": False, "drop_claim_reply": False, "drop_complete_reply": False,
+                "judge_requests": []}
 
     class Tools(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -43,7 +44,9 @@ def stack(tmp_path, monkeypatch):
         def do_POST(self):
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if self.path == "/api/generate":
-                data = {"response": json.dumps({"model_id": "fixture-model"})}
+                behavior["judge_requests"].append(body)
+                data = {"response": json.dumps({"model_id": "fixture-model"}),
+                        "done": True, "done_reason": "stop"}
             elif self.path == "/api/chat":
                 effects.append({"ollama_request": body})
                 data = {"done": True, "message": {"content": "fixture complete"}, "eval_count": 2}
@@ -94,9 +97,16 @@ def stack(tmp_path, monkeypatch):
 
 
 def test_cloud_claim_route_reserve_execute_verify_and_replay(stack):
-    config, payload, queue, ledger, effects, _, tools_url = stack
+    config, payload, queue, ledger, effects, behavior, tools_url = stack
     # Explicitly enabled judge is called locally; disabled discovery is not needed.
     config["extensions"]["judge"] = {"enabled": True, "config": {"base_url": tools_url, "model": "fixture-judge"}}
+    # A single admitted candidate now skips inference, so this transport test
+    # supplies two equally capable live routes and verifies a real local choice.
+    alternate = deepcopy(config["models"][0])
+    alternate["model_id"] = "alternate-fixture-model"
+    config["models"].append(alternate)
+    config["model_accounts"][alternate["model_id"]] = deepcopy(config["model_accounts"]["fixture-model"])
+    ledger.set_quota("fixture", 10, "requests", model=alternate["model_id"], capacity=10)
     cloud = CloudClient(config["server"]["url"], TOKEN)
     first = cloud.request("/v1/tasks", {"task_id": "E2E", "payload": payload})["task"]
     duplicate = cloud.request("/v1/tasks", {"task_id": "E2E", "payload": payload})["task"]
@@ -109,6 +119,9 @@ def test_cloud_claim_route_reserve_execute_verify_and_replay(stack):
     assert "checked artifact" in receipt["verification"]["stdout"]
     assert receipt["attempts"][0]["execution"]["events"][-1]["type"] == "tool_result"
     assert any("Local Ollama judge" in note for note in receipt["route"]["notes"])
+    assert len(behavior["judge_requests"]) == 1
+    assert behavior["judge_requests"][0]["format"]["properties"]["model_id"]["enum"] == [
+        "alternate-fixture-model", "fixture-model"]
     assert ledger.snapshot("fixture", "fixture-model")["remaining"] == 9
     assert len(effects) == 1
     assert node_once(config, execute=True)["status"] == "idle"

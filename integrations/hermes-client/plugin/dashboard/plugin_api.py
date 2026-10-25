@@ -3,6 +3,7 @@ from pathlib import Path
 import importlib.util
 import hashlib
 import sys
+import json
 from fastapi import APIRouter, HTTPException
 
 _file = Path(__file__).resolve().parents[1] / "backend.py"
@@ -18,7 +19,9 @@ router = APIRouter()
 
 def invoke(operation, *args):
     try:
-        return operation(*args)
+        value = operation(*args)
+        module = backend.load_file(Path(__file__).resolve().parents[1] / "fleet_tools.py", "native_fleet_api")
+        return module.public_result(value)
     except (ValueError, TypeError, KeyError) as error:
         raise HTTPException(400, str(error)) from None
     except Exception as error:
@@ -58,6 +61,21 @@ def preview_route(body: dict):
 @router.get("/nodes")
 def get_nodes():
     return invoke(backend.nodes)
+
+
+@router.get("/quota/dashboard")
+def quota_dashboard():
+    return invoke(backend.quota_dashboard)
+
+
+@router.post("/quota/refresh")
+def quota_refresh():
+    return invoke(backend.quota_refresh)
+
+
+@router.post("/quota/import")
+def quota_import(body: dict):
+    return invoke(backend.quota_import, body)
 
 
 @router.post("/pairing")
@@ -109,3 +127,16 @@ def worker_stop():
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str):
     return invoke(lambda: {"task": backend._fleet().task(task_id)})
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: str):
+    return invoke(lambda: {"task": backend._fleet().task(task_id, "cancel", {})})
+
+
+@router.post("/agent/fleet")
+def agent_fleet(body: dict):
+    # The external-agent skill and native model tool share one owner/node/tool/
+    # workspace admission path. Host agents retain their own permission policy.
+    module = backend.load_file(Path(__file__).resolve().parents[1] / "fleet_tools.py", "native_fleet_api")
+    return invoke(lambda: json.loads(module.perform(backend, body)))

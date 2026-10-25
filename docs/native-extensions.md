@@ -31,9 +31,17 @@ not recreate it or import a repository fallback.
 The package installer verifies the archive, compatibility, hashes and paths,
 and copies only that package into the selected Hermes home. Installation does
 not silently enable Python plugins or start a worker. Enable through the native
-plugin controls, then reload/restart the native backend as indicated by the
-host. Already running downloads/worker polls receive cancellation at unload;
-an operation already executing may finish before shutdown. No background model
+plugin controls. On first installation or first Agent enablement, **restart the
+corresponding local native backend and reconnect to that local profile**: the
+running gateway mounts plugin REST routes at startup, so enabling Desktop alone
+does not make newly installed `/settings` or catalog `/models` endpoints live.
+The extension pages identify missing static entry routes and ask the user to
+enable **Agent** on the native Plugins page, restart the corresponding local
+backend and reconnect. A missing task, session or other dynamic resource retains
+its original error and is not presented as a restart issue. No extension
+automatically kills or restarts the backend; wait for active tasks to finish
+before restarting it. Already running downloads/worker polls receive cancellation
+at unload; an operation already executing may finish before shutdown. No background model
 scan or worker starts on package import, page load, or installation.
 
 ## Local state and authentication
@@ -113,7 +121,32 @@ retrying. It never falsely claims that remote work was rolled back. After a
 restart, inspect the installed inventory; jobs are not silently restarted.
 
 Judgement calls only loopback Ollama `/api/generate` with the admitted candidate
-shortlist. Hosted/cloud model names and remote judge origins are rejected. A
+shortlist. The optional judge only sees a small routing view: by default the
+current task title (up to 512 characters), up to eight short requirement labels,
+and the first three candidates in the existing score/expiry order. Only up to
+four task-related capability dimensions and the existing deterministic totals
+are included. Long titles keep both the beginning and end with explicit omission
+markers; this is a partial summary, not a full task review. Dialogue history,
+attachments, screenshots, expected outputs and candidate metadata are excluded.
+The extension settings expose `max_task_chars` (128–2048) and `max_candidates`
+(1–8). The UTF-8 prompt has an 8192-byte hard limit; Ollama is given a 4096-token
+context window and at most 128 generated tokens. Bytes and characters are input
+size limits, not a tokenizer-independent token count. An oversized summary keeps
+the deterministic route rather than silently dropping further task constraints.
+Full admission, quota checks, deterministic scoring and expiry policy still run
+before this smaller view is constructed. If only one candidate remains in the
+admitted score/expiry shortlist, routing skips judge inference and records that
+fact in the receipt. Optional judging is reserved for a choice among candidates.
+Setting `max_candidates` to 1 also skips inference and preserves the existing
+deterministic score/expiry preference, even when the full shortlist is larger.
+
+Generation uses an explicit JSON Schema whose `model_id` enum contains only the
+visible candidates, and disables optional thinking for this short selection.
+The response must also report completed generation with no runtime error or
+length stop; the client independently checks the returned single-key JSON. A
+schema constraint is not treated as a substitute for response validation.
+
+Hosted/cloud model names and remote judge origins are rejected. A
 fresh `/api/tags` weight-size check and `/api/show` local architecture check run
 before **every** judgement; a renamed cloud alias is rejected before generation.
 A malformed response, missing model, timeout or runtime failure retains the
