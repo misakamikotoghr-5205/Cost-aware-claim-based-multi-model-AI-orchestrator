@@ -6,7 +6,7 @@ import { localApi } from '../../../../plugin/desktop/src/local-api'
 import { localApi as judgeApi } from '../../../local-judge/desktop/src/local-api'
 import { localApi as freeApi } from '../../../free-models/desktop/src/local-api'
 import { localApi as pointerApi } from './local-api'
-const mocks = vi.hoisted(() => ({ insert: vi.fn(async () => true), submit: vi.fn(), attach: vi.fn(async () => true), profile: 'default', connection: 'cloud', session: 'chat-one' }))
+const mocks = vi.hoisted(() => ({ insert: vi.fn(async () => true), submit: vi.fn(), attach: vi.fn(async () => true), notify: vi.fn(), profile: 'default', connection: 'cloud', session: 'chat-one' }))
 vi.mock('@hermes/plugin-sdk', async () => {
   const React = await import('react')
   return { Button: ({ variant, size, children, ...props }: any) => React.createElement('button', props, children),
@@ -19,15 +19,16 @@ vi.mock('@hermes/plugin-sdk', async () => {
       focusedStoredSessionId: { get: () => mocks.session }, focusedSessionId: { get: () => mocks.session },
       focusedSessionProfile: { get: () => mocks.profile }, connectionId: { get: () => mocks.connection },
       focusedSessionOwner: { get: () => ({ connectionId: mocks.connection, profile: mocks.profile }) }
-    }, composer: { insertText: mocks.insert, submit: mocks.submit, attachImages: mocks.attach }, revealPane: vi.fn() } }
+    }, composer: { insertText: mocks.insert, submit: mocks.submit, attachImages: mocks.attach }, notifyError: mocks.notify, revealPane: vi.fn() } }
 })
 import pointerPlugin, { PointerPane } from './plugin'
 import { ClientPage } from '../../../../plugin/desktop/src/plugin'
 import { JudgeSettingsPage } from '../../../local-judge/desktop/src/plugin'
+import { DiscoveryPage } from '../../../free-models/desktop/src/plugin'
 const ctx = { storage: { get: (_: string, fallback: unknown) => fallback }, rest: vi.fn() } as any
 const captured = { status: 'ok', imageDataUrl: 'data:image/png;base64,aGVsbG8=', width: 1000, height: 500 }
 beforeEach(() => {
-  mocks.insert.mockClear(); mocks.submit.mockClear(); mocks.attach.mockClear(); mocks.connection = 'cloud'; mocks.profile = 'default'; mocks.session = 'chat-one'
+  mocks.insert.mockClear(); mocks.submit.mockClear(); mocks.attach.mockClear(); mocks.notify.mockClear(); mocks.connection = 'cloud'; mocks.profile = 'default'; mocks.session = 'chat-one'
   Object.defineProperty(window, 'PointerEvent', { value: MouseEvent, configurable: true }); Element.prototype.setPointerCapture = vi.fn()
   vi.spyOn(HTMLImageElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, width: 200, height: 100, top: 0, left: 0, right: 200, bottom: 100, toJSON() {} })
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: vi.fn() } as any)
@@ -47,7 +48,7 @@ it('machine operations stay local while active chat is cloud; unavailable bridge
   await localApi('work')('/worker/start', { method: 'POST', body: {} })
   expect(api).toHaveBeenCalledWith({ path: '/api/plugins/orchestrator-core/worker/start', method: 'POST', body: {}, connectionId: 'local', profile: 'work', priority: 'foreground' })
   expect(ctx.rest).not.toHaveBeenCalled(); delete (window as any).hermesDesktop
-  await expect(localApi('work')('/worker/start')).rejects.toThrow('本机 Hermes 代理不可用')
+  await expect(localApi('work')('/worker/start')).rejects.toThrow('本机代理不可用')
 })
 it.each([
   { name: 'core', makeApi: localApi, entry: '/extensions' },
@@ -58,9 +59,9 @@ it.each([
   const api = vi.fn(); (window as any).hermesDesktop = { api }
   const request = makeApi('work')
   api.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { statusCode: 404 }))
-  await expect(request('/settings?reload=1')).rejects.toThrow('在原生插件页启用 Agent，重启对应本机代理，再重新连接')
+  await expect(request('/settings?reload=1')).rejects.toThrow(/在原生插件页启用.*重启对应本机代理，再重新连接/)
   api.mockRejectedValueOnce(new Error("Error invoking remote method 'api': Error: 404: Not Found"))
-  await expect(request(entry)).rejects.toThrow('在原生插件页启用 Agent，重启对应本机代理，再重新连接')
+  await expect(request(entry)).rejects.toThrow(/在原生插件页启用.*重启对应本机代理，再重新连接/)
   for (const path of ['/tasks/missing', '/sessions/missing/commit', '/models/pull/missing', '/nodes/missing/revoke']) {
     const failure = new Error('404: Resource no longer exists'); api.mockRejectedValueOnce(failure)
     await expect(request(path)).rejects.toBe(failure)
@@ -141,8 +142,65 @@ it('model weights are requested only after install click and progress reaches ba
   await waitFor(() => expect((screen.getByText('安装所选本地模型') as HTMLButtonElement).disabled).toBe(false))
   expect(api.mock.calls.some(([request]) => request.path.includes('/models/pull'))).toBe(false)
   fireEvent.click(screen.getByText('安装所选本地模型'))
-  await waitFor(() => expect(screen.getByText(/"status": "complete"/)).toBeTruthy())
+  await waitFor(() => expect(screen.getByText('本机模型下载完成')).toBeTruthy())
   expect(api.mock.calls.find(([request]) => request.path.endsWith('/models/pull'))![0].body).toEqual({ model: 'qwen3:4b' })
+})
+it.each(['cancelled', 'failed'])('download %s is explained in Chinese without exposing raw machine fields', async status => {
+  const api = vi.fn(async (request: any) => {
+    if (request.path.endsWith('/settings')) return { base_url: 'http://127.0.0.1:11434', model: 'qwen3:4b', timeout: 5, max_task_chars: 512, max_candidates: 3 }
+    if (request.path.endsWith('/models/pull')) return { job_id: 'download', status: 'queued', model: 'qwen3:4b', progress: 0 }
+    return { job_id: 'download', status, model: 'qwen3:4b', progress: .4, error: 'URLError', detail: 'Waiting for local Ollama' }
+  })
+  ;(window as any).hermesDesktop = { api }
+  const scoped = { ...ctx, setTimeout: (callback: () => void) => { let active = true; Promise.resolve().then(() => { if (active) callback() }); return () => { active = false } } }
+  render(createElement(JudgeSettingsPage, { ctx: scoped }))
+  await waitFor(() => expect((screen.getByText('安装所选本地模型') as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByText('安装所选本地模型'))
+  await screen.findByText(status === 'cancelled'
+    ? '已停止跟踪下载，服务端安装可能仍在继续；请重新检测本机模型状态。' : '下载未确认完成，请重新检测本机模型状态。')
+  expect(screen.getByText('下载进度：40%')).toBeTruthy()
+  expect(screen.queryByText(/URLError|Waiting for local Ollama|"job_id"|"status"/)).toBeNull()
+  expect(screen.getByText('模型：qwen3:4b')).toBeTruthy()
+})
+
+it('free model refresh presents Chinese billing and a truthful partial-source summary', async () => {
+  const config = { ollama_url: 'http://127.0.0.1:11434', ollama: true, openrouter: true, ttl_seconds: 900 }
+  const api = vi.fn(async (request: any) => {
+    if (request.path.endsWith('/settings')) return config
+    if (request.path.endsWith('/models')) return { models: [] }
+    if (request.path.endsWith('/refresh')) return { models: [{ model_id: 'open/model-a', provider: 'openrouter', billing_mode: 'free', available: true }],
+      events: [{ kind: 'added' }], errors: [{ source: 'ollama', error: 'URLError' }], complete: false }
+    throw new Error('Unexpected request')
+  })
+  ;(window as any).hermesDesktop = { api }
+  render(createElement(DiscoveryPage, { ctx }))
+  await waitFor(() => expect((screen.getByText('现在联网刷新') as HTMLButtonElement).disabled).toBe(false))
+  fireEvent.click(screen.getByText('现在联网刷新'))
+  expect(await screen.findByText(/刷新已结束，部分来源未完成。当前发现 1 个模型。/)).toBeTruthy()
+  expect(screen.getByText('OpenRouter · 免费 · 发现源可用')).toBeTruthy()
+  expect(screen.getByRole('status').textContent).toContain('新增 1 个，更新 0 个，移除 0 个。')
+  expect(screen.getByRole('status').textContent).toContain('Ollama 未返回有效结果')
+  expect(screen.queryByText(/URLError|"events"|"billing_mode"/)).toBeNull()
+  expect(api.mock.calls.find(([request]) => request.path.endsWith('/refresh'))![0]).toMatchObject({ method: 'POST', connectionId: 'local', profile: 'default', body: {} })
+})
+
+it('native screen capture errors are translated before they reach the pointer pane', async () => {
+  const api = vi.fn()
+  ;(window as any).hermesDesktop = { api, regionCapture: { capture: async () => ({ status: 'unsupported', message: 'The selected screen could not be captured.' }) } }
+  render(createElement(PointerPane, { ctx }))
+  fireEvent.click(screen.getByText('开始圈选'))
+  expect((await screen.findByRole('alert')).textContent).toContain('无法获取所选屏幕，请检查系统截图权限。')
+  expect(screen.queryByText(/The selected screen/)).toBeNull()
+  expect(api).not.toHaveBeenCalled()
+})
+
+it('a native pointer launch failure uses a Chinese toast and the full SDK notification signature', async () => {
+  ;(window as any).hermesDesktop = { pointerCompact: { open: async () => { throw new Error('ECONNREFUSED') } } }
+  const register = vi.fn()
+  pointerPlugin.register({ register } as any)
+  const command = register.mock.calls.find(([entry]) => entry.area === 'palette')![0]
+  await command.data.run()
+  expect(mocks.notify).toHaveBeenCalledWith('暂时无法连接服务，请检查本机代理、模型运行时或网络后重试。', '智能指针未能打开')
 })
 it('native screen crop is ready for intent generation without forcing a second drag', async () => {
   ;(window as any).hermesDesktop = { api: vi.fn(), regionCapture: { capture: async () => ({ ...captured, selectionMode: 'screen-region', region_already_cropped: true }) } }
