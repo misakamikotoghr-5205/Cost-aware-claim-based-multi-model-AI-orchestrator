@@ -70,6 +70,27 @@ def test_core_inactive_keeps_native_route_without_optional_imports(installed):
     assert not any(item["installed"] for item in inventory)
 
 
+def test_chinese_manifests_and_node_grants_use_utf8_under_legacy_windows_locale(installed, monkeypatch):
+    manifest = installed.core / "plugin.yaml"
+    manifest.write_text("name: orchestrator-core\ndescription: 中文扩展说明\n", encoding="utf-8-sig")
+    config = installed.backend.defaults()
+    config["server"]["url"] = "https://fleet.example"
+    config["node"].update(owner_id="owner-test", node_id="node-test")
+    grant = {"server_url": "https://fleet.example", "owner_id": "owner-test", "node_id": "node-test",
+             "token": "fixture-transport-only", "label": "中文节点"}
+    path = installed.backend.state_path(filename="node-grant.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(grant, ensure_ascii=False), encoding="utf-8-sig")
+    original = Path.read_text
+
+    def legacy_read_text(path, encoding=None, errors=None):
+        return original(path, encoding=encoding or "cp1252", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", legacy_read_text)
+    assert installed.backend.read_manifest(manifest)["description"] == "中文扩展说明"
+    assert installed.backend._node_grant(config)["label"] == "中文节点"
+
+
 def test_installed_native_disabled_extension_is_not_loaded(installed, monkeypatch):
     installed.add("local-judge")
     config = installed.backend.defaults()

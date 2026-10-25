@@ -63,7 +63,7 @@ def read_manifest(path):
         from hermes_yaml import safe_load
     except ImportError:
         from yaml import safe_load
-    return safe_load(path.read_text())
+    return safe_load(path.read_text(encoding="utf-8-sig"))
 
 
 def embedded(name: str):
@@ -569,7 +569,7 @@ def _node_grant(config):
     path = state_path(filename="node-grant.json")
     if not path.is_file():
         raise ValueError("Pair this node first")
-    grant = json.loads(path.read_text())
+    grant = json.loads(path.read_text(encoding="utf-8-sig"))
     node = config["node"]
     if (grant.get("server_url") != _server_binding(config["server"])
             or grant.get("owner_id") != node.get("owner_id") or grant.get("node_id") != node.get("node_id")
