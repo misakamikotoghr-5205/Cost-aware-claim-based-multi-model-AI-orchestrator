@@ -1,0 +1,20 @@
+{
+  "upstream_commit": "4dcef215cfe41bd2d02c2d1dad6e257a18101216",
+  "requires_previous_patches": "0001–0009",
+  "patch_sha256": "68ed2d1d9260cd95dab9e39d38bf15feab2b63ba140cc6c8c5a3dbf39a74cafb",
+  "patched_tree": "c5b5bdd309d1c71ad9a865ad438fd240df9f7778",
+  "source_checks": {
+    "patch_forward_and_reverse": true,
+    "english_leaves": 5408,
+    "explicit_zh_leaves": 5442,
+    "missing_zh_leaves": 0,
+    "leaf_kind_differences": 0,
+    "visible_interpolation_arguments_dropped": 0,
+    "ui_locale_and_placeholder_tests": 61,
+    "electron_menu_capture_recovery_tests": 35,
+    "all_locale_overlay_ratchet_tests": 2,
+    "settings_behavior_and_provider_locale_tests": 10,
+    "media_reference_and_extra_controls_regression_tests": 35
+  },
+  "full_native_build_or_real_GUI_in_this_check": false
+}
