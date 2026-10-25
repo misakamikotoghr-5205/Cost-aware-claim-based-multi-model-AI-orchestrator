@@ -146,7 +146,7 @@ async function windowState(application, ownerId) {
 
 async function realCompactCrop(application, compact, output) {
   const pid = await application.evaluate(() => process.pid)
-  const helper = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-File',
+  const helper = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
     join(ownDirectory, 'native-dialog.ps1'), '-ApplicationPid', String(pid),
     '-DiagnosticsPath', join(output, 'compact-native-dialog-report.json')], { stdio: 'ignore' })
   const consent = new Promise((resolve, reject) => {
@@ -203,7 +203,7 @@ export async function verifyCompact(application, main, output, ownerId) {
   await desktop.check()
   assert.equal(await desktop.getAttribute('aria-checked'), 'true')
   await main.getByRole('button', { name: /^(Close|关闭)$/ }).last().click()
-  await main.getByRole('button', { name: /^(New session|新会话)/ }).first().click()
+  await main.getByRole('button', { name: /^(New session|新建会话)/ }).first().click()
   const scope = { sessionId: 'new', profile: 'default', connectionId: 'local' }
   const opened = await main.evaluate(value => window.hermesDesktop.pointerCompact.open(value), scope)
   assert.equal(opened.ok, true, opened.message)
@@ -252,7 +252,10 @@ export async function verifyCompact(application, main, output, ownerId) {
   const escapeWindow = await until(async () => application.windows().find(page => page.url().includes('win=pointer')),
     value => Boolean(value), 'Compact did not reopen for actual Escape')
   await escapeWindow.getByRole('region', { name: '智能指针浮框', exact: true }).waitFor({ state: 'visible' })
-  await escapeWindow.keyboard.press('Escape')
+  await escapeWindow.keyboard.press('Escape').catch(error => {
+    // Native keyDown may close its target before Playwright can deliver keyUp.
+    if (!escapeWindow.isClosed()) throw error
+  })
   await until(() => windowState(application, ownerId), value => value.main_visible && !value.pointer_visible, 'Actual Escape did not restore original chat')
   assert.equal((await editor.innerText()).trim(), draft.trim())
   assert.equal(await main.locator('[data-slot="composer-attachments"] img').count(), 1)

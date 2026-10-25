@@ -54,6 +54,7 @@ jobs:
           node --check scripts/acceptance/native-desktop.mjs
           node --check scripts/acceptance/misaka-final.mjs
           node --check scripts/acceptance/capture-environment.mjs
+          node --check scripts/acceptance/dialog-environment.mjs
           node --check scripts/probe_native_backend.mjs
       - name: Locate public npm content cache
         id: npm-cache-location

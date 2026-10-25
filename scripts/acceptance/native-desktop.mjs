@@ -92,6 +92,20 @@ try {
       report.screen_api_diagnostics.push({ file, ...result })
       console.log(JSON.stringify({ screen_api_diagnostic: file, result: result.result, elapsed_ms: result.elapsed_ms, error: result.error }))
     }
+    report.native_dialog_diagnostics = []
+    for (const hidden of [false, true]) for (const withSignal of [false, true]) {
+      const file = 'dialog-environment-hide-' + hidden + '-signal-' + withSignal + '.json'
+      const diagnostic = spawnSync(executablePath, [join(ownDirectory, 'dialog-environment.mjs'), '--no-sandbox',
+        '--dialog-report=' + join(output, file), '--dialog-windows-hide=' + hidden,
+        ...(withSignal ? ['--dialog-with-signal'] : [])], {
+        env, cwd: desktopRoot, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: hidden, timeout: 20_000, maxBuffer: 1024 * 1024,
+      })
+      const value = existsSync(join(output, file)) ? JSON.parse(readFileSync(join(output, file), 'utf8')) : { result: 'process_failed' }
+      const result = diagnostic.error || diagnostic.status !== 0 ? { ...value, result: 'process_failed', status: diagnostic.status, code: diagnostic.error?.code } : value
+      writeFileSync(join(output, file), JSON.stringify(result, null, 2))
+      report.native_dialog_diagnostics.push({ file, ...result })
+      console.log(JSON.stringify({ native_dialog_diagnostic: file, result: result.result, elapsed_ms: result.elapsed_ms }))
+    }
   }
   checkpoint('launching_real_electron')
   application = await _electron.launch({ executablePath, args: [desktopRoot, ...(process.platform === 'win32' ? [] : ['--disable-gpu']), '--no-sandbox'], env, cwd: desktopRoot, timeout: 120_000 })
@@ -147,6 +161,19 @@ try {
 
   if (process.platform === 'win32') {
     checkpoint('opening_actual_native_screen_dialog')
+    report.capture_owner = await application.evaluate(({ BrowserWindow }, id) => {
+      const owner = BrowserWindow.fromId(id)
+      if (!owner || owner.isDestroyed()) throw new Error('The actual capture owner is unavailable')
+      const state = () => ({ visible: owner.isVisible(), focused: owner.isFocused(), minimized: owner.isMinimized(), bounds: owner.getBounds() })
+      const before = state()
+      if (owner.isMinimized()) owner.restore()
+      owner.hide()
+      owner.show()
+      owner.focus()
+      return { before, after: state() }
+    }, report.identity.owner_id)
+    assert.equal(report.capture_owner.after.visible, true, 'Actual capture requires its user-visible owner')
+    assert.equal(report.capture_owner.after.minimized, false, 'Actual capture owner must be restored')
     const electronPid = await application.evaluate(() => process.pid)
     report.native_displays = await application.evaluate(({ screen }) => screen.getAllDisplays().map(display => ({
       id: display.id, bounds: display.bounds, scaleFactor: display.scaleFactor,
