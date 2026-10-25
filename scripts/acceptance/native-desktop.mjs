@@ -109,6 +109,7 @@ try {
   await openSettings.click({ timeout: 5000 })
   await page.getByRole('button', { name: 'Close settings', exact: true }).waitFor({ state: 'visible', timeout: 15000 })
   await page.getByRole('button', { name: 'Appearance', exact: true }).click()
+  await page.getByRole('button', { name: 'Theme', exact: true }).click()
   await page.getByPlaceholder('Search your themes or the VS Code Marketplace…').waitFor({ state: 'visible', timeout: 15_000 })
   await page.getByText('Light', { exact: true }).first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.screenshot({ path: join(output, '03-windows-native-settings.png') })
