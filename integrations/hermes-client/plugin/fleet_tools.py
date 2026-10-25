@@ -4,6 +4,8 @@ import json
 import re
 
 TOOL = "orchestrator_fleet"
+PRIVATE_FIELDS = {"token", "ticket", "lease_token", "access_token", "refresh_token", "api_key", "apikey",
+                  "authorization", "cookie", "cookies", "password", "credentials", "headers"}
 SCHEMA = {"name": TOOL, "description": "List/select paired nodes; submit constrained tasks and inspect/cancel receipts. No remote shell command channel.",
           "parameters": {"type": "object", "additionalProperties": False,
             "properties": {
@@ -31,6 +33,16 @@ def available(backend):
     return bool(config["fleet_tools"]["enabled"] and config["server"].get("url"))
 
 
+def public_result(value):
+    """Agent/UI receipts never need node-private lease or authentication fields."""
+    if isinstance(value, dict):
+        return {key: public_result(item) for key, item in value.items()
+                if key.lower() not in PRIVATE_FIELDS and not key.lower().endswith(("_token", "_password", "_api_key"))}
+    if isinstance(value, list):
+        return [public_result(item) for item in value]
+    return value
+
+
 def perform(backend, args):
     mutating_request = False
     try:
@@ -54,7 +66,7 @@ def perform(backend, args):
         if action in {"status", "cancel"}:
             mutating_request = action == "cancel"
             record = client.task(task_id, "cancel", {}) if action == "cancel" else client.task(task_id)
-            return json.dumps({"task": record})
+            return json.dumps(public_result({"task": record}))
         target = next((node for node in nodes if node.get("node_id") == args.get("target") and not node.get("revoked_at")), None)
         if target is None:
             raise ValueError("Choose a live paired node owned by this connection")
@@ -102,7 +114,7 @@ def perform(backend, args):
                    "workspace_alias": alias, "relative_dir": relative, "tools": tools,
                    "max_actions": maximum, "metadata": metadata}
         mutating_request = True
-        return json.dumps({"task": client.submit(task_id, payload)})
+        return json.dumps(public_result({"task": client.submit(task_id, payload)}))
     except (ValueError, TypeError, KeyError) as error:
         if mutating_request:
             return json.dumps({"error": "Fleet response unconfirmed; retain the task ID and query status", "submitted": "unknown"})

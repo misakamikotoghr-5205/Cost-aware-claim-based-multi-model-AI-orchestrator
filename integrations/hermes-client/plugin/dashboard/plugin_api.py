@@ -19,7 +19,9 @@ router = APIRouter()
 
 def invoke(operation, *args):
     try:
-        return operation(*args)
+        value = operation(*args)
+        module = backend.load_file(Path(__file__).resolve().parents[1] / "fleet_tools.py", "native_fleet_api")
+        return module.public_result(value)
     except (ValueError, TypeError, KeyError) as error:
         raise HTTPException(400, str(error)) from None
     except Exception as error:

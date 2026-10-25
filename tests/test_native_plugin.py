@@ -206,6 +206,21 @@ def test_external_agent_rest_reuses_native_fleet_gate(installed, monkeypatch):
     assert result['submitted'] is False and 'Unknown' in result['error']
 
 
+def test_native_rest_keeps_private_node_leases_out_of_receipts_and_worker_state(installed, monkeypatch):
+    fastapi=pytest.importorskip('fastapi');testclient=pytest.importorskip('fastapi.testclient')
+    api=load(installed.core/'dashboard/plugin_api.py','native_api')
+    private={'task_id':'stable','lease_token':'private-node-lease','result':{'verified':True,'usage':{'prompt_tokens':128}}}
+    monkeypatch.setattr(installed.backend,'_fleet',lambda:types.SimpleNamespace(task=lambda *a:private))
+    monkeypatch.setattr(installed.backend,'worker_status',lambda:{'running':False,'last_result':private})
+    app=fastapi.FastAPI();app.include_router(api.router,prefix='/api/plugins/orchestrator-core')
+    client=testclient.TestClient(app)
+    for path in ('/tasks/stable','/worker'):
+        response=client.get('/api/plugins/orchestrator-core'+path)
+        assert response.status_code==200 and 'private-node-lease' not in response.text
+        assert 'lease_token' not in response.text and 'prompt_tokens' in response.text
+    assert private['lease_token']=='private-node-lease'
+
+
 @pytest.fixture
 def ollama():
     state = {"choice": "second", "fail": False, "calls": [], "remote": False}
@@ -583,3 +598,5 @@ def test_actual_fleet_tool_http_node_mcp_and_verified_receipt(installed, monkeyp
         receipt=json.loads(ctx.tool['handler']({'action':'status','task_id':'native-mcp'}))
         assert receipt['task']['status']=='done'
         assert receipt['task']['result']['verified'] is True
+        assert 'lease_token' not in receipt['task']
+        assert completed['lease_token']  # Native node protocol still owns its original lease.
