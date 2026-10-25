@@ -2,7 +2,7 @@
   "name": "free-models",
   "label": "Free model discovery",
   "description": "Native desktop REST backend",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "tab": {
     "hidden": true
   },

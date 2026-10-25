@@ -1,5 +1,5 @@
 name: smart-pointer
-version: 0.1.0
+version: 0.1.1
 description: "圈选区域、选择意图、补充关键词，将已选候选写为聊天草稿；不会自动提交或执行。"
 author: AI Orchestrator contributors
 provides_hooks: []
