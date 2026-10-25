@@ -122,7 +122,14 @@ export async function verifyBrand(application, page) {
     const api = window.hermesDesktop.updates
     return { check: await api.check(), apply: await api.apply(), channel: await api.setChannel('stable') }
   })
-  for (const result of Object.values(updates)) assert.equal(result.reason, 'misaka-managed-build')
+  for (const result of [updates.check, updates.channel]) {
+    assert.equal(result.supported, false)
+    assert.equal(result.reason, 'misaka-managed-build')
+    assert.equal(result.channelSelectable, false)
+  }
+  assert.equal(updates.apply.ok, false)
+  assert.equal(updates.apply.manual, true)
+  assert.equal(updates.apply.error, 'misaka-managed-build')
   return { ...value, official_update_guard: updates }
 }
 
