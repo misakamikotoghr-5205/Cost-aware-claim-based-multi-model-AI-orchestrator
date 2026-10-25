@@ -1,7 +1,7 @@
 /** Actual pinned Electron application; no mock backend, UI, inference or auth. */
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +22,11 @@ const desktopRoot = join(upstream, 'apps/desktop')
 const ownDirectory = dirname(fileURLToPath(import.meta.url))
 const userData = join(profile, 'acceptance-electron-user-data')
 mkdirSync(userData, { recursive: true })
+// This throwaway profile deliberately has no account or inference provider.
+// Disable the optional guest tier and tutorial, exactly as native config allows.
+if (!existsSync(join(profile, 'config.yaml'))) {
+  writeFileSync(join(profile, 'config.yaml'), JSON.stringify({ nous: { guest: false }, onboarding: { run: false }, plugins: { enabled: [] } }))
+}
 writeFileSync(join(userData, 'window-state.json'), JSON.stringify({ x: 0, y: 0, width: 1280, height: 900, isMaximized: false }))
 writeFileSync(join(userData, 'zoom-state.json'), JSON.stringify({ zoomLevel: 0 }))
 const env = Object.fromEntries(Object.entries(process.env).filter(([name]) =>
@@ -66,13 +71,22 @@ try {
   assert(await page.evaluate(() => typeof window.hermesDesktop?.regionCapture?.capture === 'function'))
   report.checks.push('Patched native region-capture capability exposed by actual preload')
 
+  const chooseLater = page.getByRole('button', { name: "I'll choose a provider later", exact: true })
+  if (await chooseLater.isVisible().catch(() => false)) {
+    await chooseLater.click()
+    await chooseLater.waitFor({ state: 'hidden', timeout: 15_000 })
+    await page.screenshot({ path: join(output, '02-windows-native-chat.png') })
+    report.screenshots.push('02-windows-native-chat.png')
+    report.checks.push('Native choose-provider-later control exposes the real chat without an account')
+  }
+
   const openSettings = page.getByRole('button', { name: 'Open settings', exact: true })
   if (await openSettings.isVisible().catch(() => false)) {
     try {
       await openSettings.click({ timeout: 5000 })
       await page.getByRole('button', { name: 'Close settings', exact: true }).waitFor({ state: 'visible', timeout: 15000 })
-      await page.screenshot({ path: join(output, '02-windows-native-settings.png') })
-      report.screenshots.push('02-windows-native-settings.png')
+      await page.screenshot({ path: join(output, '03-windows-native-settings.png') })
+      report.screenshots.push('03-windows-native-settings.png')
       report.checks.push('Native settings opened through its actual control')
       await page.getByRole('button', { name: 'Close settings', exact: true }).click()
     } catch {
@@ -112,8 +126,8 @@ try {
       await new Promise(resolveWait => setTimeout(resolveWait, 100))
       return (await overlay.webContents.capturePage()).toPNG().toString('base64')
     }, end)
-    writeFileSync(join(output, '03-windows-native-region-selection.png'), Buffer.from(overlayPng, 'base64'))
-    report.screenshots.push('03-windows-native-region-selection.png')
+    writeFileSync(join(output, '04-windows-native-region-selection.png'), Buffer.from(overlayPng, 'base64'))
+    report.screenshots.push('04-windows-native-region-selection.png')
     await application.evaluate(({ BrowserWindow }, point) => {
       const overlay = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL().startsWith('data:text/html'))
       overlay.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
@@ -123,8 +137,8 @@ try {
     assert.equal(result.region_already_cropped, true)
     assert(result.width < width && result.height < height)
     assert(result.imageDataUrl.startsWith('data:image/png;base64,'))
-    writeFileSync(join(output, '04-windows-native-cropped-region.png'), Buffer.from(result.imageDataUrl.split(',')[1], 'base64'))
-    report.screenshots.push('04-windows-native-cropped-region.png')
+    writeFileSync(join(output, '05-windows-native-cropped-region.png'), Buffer.from(result.imageDataUrl.split(',')[1], 'base64'))
+    report.screenshots.push('05-windows-native-cropped-region.png')
     report.capture = { status: result.status, selectionMode: result.selectionMode, width: result.width, height: result.height, nativeDialogInvoked: true, wholeScreenReturned: false }
     report.checks.push('Actual Windows screen consent, native overlay drag and strict PNG crop passed')
   }
