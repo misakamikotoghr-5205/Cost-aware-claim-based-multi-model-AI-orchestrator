@@ -36,10 +36,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Locate public npm content cache
+        id: npm-cache-location
+        run: |
+          $npmContentCache = Join-Path (npm config get cache) '_cacache'
+          "path=$npmContentCache" >> $env:GITHUB_OUTPUT
+      - uses: actions/cache/restore@v4
+        id: npm-cache
+        with:
+          path: ${{ steps.npm-cache-location.outputs.path }}
+          key: windows-native-public-npm-node24-${{ hashFiles('integrations/hermes-client/upstream.json') }}
       - name: Prepare actual pinned native runtime and application
         run: |
           python -m pip install -r requirements.txt
           python scripts/prepare_native_client.py --cache-dir "$env:RUNNER_TEMP/native-source" --hermes-home "$env:RUNNER_TEMP/native-profile" --build
+      - name: Cache public npm package bytes only
+        if: always() && steps.npm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.npm-cache-location.outputs.path }}
+          key: windows-native-public-npm-node24-${{ hashFiles('integrations/hermes-client/upstream.json') }}
       - name: Inspect actual Office availability
         if: always()
         run: |

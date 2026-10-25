@@ -111,7 +111,7 @@ try {
       viewport = await application.evaluate(async ({ BrowserWindow }) => {
         const overlay = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL().startsWith('data:text/html'))
         if (!overlay?.isVisible()) return null
-        return await overlay.webContents.executeJavaScript('document.querySelector("#screen")?.naturalWidth ? ({width:innerWidth,height:innerHeight}) : null')
+        return await overlay.webContents.executeJavaScript('document.querySelector("#screen")?.naturalWidth ? ({width:innerWidth,height:innerHeight,bitmapWidth:document.querySelector("#screen").naturalWidth,bitmapHeight:document.querySelector("#screen").naturalHeight}) : null')
       })
       if (viewport) break
       await new Promise(resolveWait => setTimeout(resolveWait, 100))
@@ -135,7 +135,9 @@ try {
     const result = await captureDone
     assert.equal(result.status, 'ok')
     assert.equal(result.region_already_cropped, true)
-    assert(result.width < width && result.height < height)
+    assert.equal(result.width, Math.ceil(end.x * viewport.bitmapWidth / width) - Math.floor(40 * viewport.bitmapWidth / width))
+    assert.equal(result.height, Math.ceil(end.y * viewport.bitmapHeight / height) - Math.floor(120 * viewport.bitmapHeight / height))
+    assert(result.width < viewport.bitmapWidth && result.height < viewport.bitmapHeight)
     assert(result.imageDataUrl.startsWith('data:image/png;base64,'))
     writeFileSync(join(output, '05-windows-native-cropped-region.png'), Buffer.from(result.imageDataUrl.split(',')[1], 'base64'))
     report.screenshots.push('05-windows-native-cropped-region.png')
