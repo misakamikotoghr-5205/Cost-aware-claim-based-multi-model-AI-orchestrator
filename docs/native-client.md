@@ -163,10 +163,10 @@ A ZIP has files at its root (no directory records), including `plugin.yaml`,
 {
   "schema_version": 1,
   "id": "local-judge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "requires": {
     "hermes_commit": "4dcef215cfe41bd2d02c2d1dad6e257a18101216",
-    "core_version": "0.1.0"
+    "core_version": "0.2.0"
   },
   "files": {
     "plugin.yaml": "<64 lowercase SHA-256 hex characters>",

@@ -56,6 +56,8 @@ separate installable extension ZIPs.** They are delivered together, not preinsta
 
 See [desktop setup](docs/desktop.md), [cloud/local runtime](docs/cloud-local.md)
 and [ROADMAP.md](ROADMAP.md) for scope and validation limits.
+Windows and Ubuntu build, extension and Skill instructions are also available in
+the [Chinese quick start](docs/misaka-quickstart.zh-CN.md).
 
 ## Desktop quick start
 
@@ -200,18 +202,23 @@ Issues and PRs welcome. Never include real keys/tokens in issues or logs.
 
 ### 当前实现状态
 
-桌面以 **Hermes 完整原生 Electron 客户端**为基础，保留原生聊天、历史、工具、
-Skills、MCP、审批、多 profile 和 OAuth/API 配置。无需云端也可独立使用。
-云端支持配对多台本地机，账户身份与节点身份分离。
+**MISAKA AGENT** 以 Hermes 完整原生 Electron 客户端为基础，使用自己的名称、图标、
+开屏和建议，保留原生聊天、历史、工具、Skills、MCP、审批、多 profile 和 OAuth/API 配置。
+无需云端也可独立使用；云端支持配对多台本地机，账户身份与节点身份分离。
+集成 Dashboard 展示账号额度和云端工作配额，无法观测的数据保持未知。
 
 **判断模型、免费/限免模型发现、智能指针分别交付独立扩展 ZIP**，用户按需安装、启用、
 卸载；不再是预装功能的三个开关。智能指针从选区与关键词给出意图候选，支持补词换一批，
-选定后进入原生聊天草稿，由用户确认发送。模型权重按需下载，不默认启动模型或读取屏幕。
+开启指针后隐藏主窗，只保留右上角关键词小框；选定后进入原生聊天草稿，由用户确认发送。
+模型权重按需下载，不默认启动模型或读取屏幕。另有独立标准 Agent Skill，可让 Claude Code、
+Codex、Hermes 等宿主调用同一套运行时、额度查询和节点任务。
 
 已实现 Hermes/DeepSeek Harness/Ollama/受限 MCP 适配、客户端评分、原子额度预留、
 云端任务领取及租约、独立验收和未知结果保留。离线集成测试使用真实子进程和本机 HTTP；
-真实订阅登录、Windows/Ubuntu 真机桌面、Computer Use 等部署验收尚未完成，不能当作
-已经实测。详见 [桌面客户端](docs/desktop.md) 与 [云端本地配置](docs/cloud-local.md)。
+Linux/X11 原生 GUI、本地小模型回复、判断模型、独立包生命周期和 Skill 正向任务链已实际运行；
+Windows 图形界面和捕获的结论以本次平台报告为准。真实订阅首次登录、Office 编辑及跨物理机部署需要对应账号和环境。
+安装与使用见 [Windows / Ubuntu 中文快速开始](docs/misaka-quickstart.zh-CN.md)、
+[桌面客户端](docs/desktop.md) 与 [云端本地配置](docs/cloud-local.md)。
 
 ```bash
 python -m pip install -r requirements.txt

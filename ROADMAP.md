@@ -24,8 +24,9 @@ is not equivalent to real-machine or live-account acceptance.
 - Install and authenticate selected native executors on each intended machine.
 - Verify current upstream CLI versions and real subscription quota sources.
 - Linux/X11 GUI, the compact pointer, real small-model judgement and package
-  lifecycle have been exercised. Continue Windows capture and intended Office/
-  Computer Use host acceptance; component evidence is not a live-account test.
+  lifecycle have been exercised. Platform reports bind native GUI/capture
+  evidence to the tested source and host. Verify each intended Windows/Ubuntu,
+  Office and Computer Use host; component evidence is not a live-account test.
 - Deploy private cloud connectivity, credentials, backups and reconciliation.
 
 ## Stability work
