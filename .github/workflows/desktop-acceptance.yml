@@ -56,6 +56,12 @@ jobs:
           node --check scripts/acceptance/capture-environment.mjs
           node --check scripts/acceptance/dialog-environment.mjs
           node --check scripts/probe_native_backend.mjs
+          Get-ChildItem scripts/acceptance/*.ps1 | ForEach-Object {
+            $parseTokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { throw "PowerShell acceptance script failed to parse: $($_.Name)" }
+          }
       - name: Locate public npm content cache
         id: npm-cache-location
         run: |

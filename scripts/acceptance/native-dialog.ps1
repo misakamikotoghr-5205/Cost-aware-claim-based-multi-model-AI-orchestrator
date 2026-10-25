@@ -18,6 +18,7 @@ try {
   do {
     $windows = $desktop.FindAll([Windows.Automation.TreeScope]::Children, [Windows.Automation.Condition]::TrueCondition)
     foreach ($window in $windows) {
+      try {
       $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
       $buttons = $window.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
       $row = [ordered]@{ hwnd = $window.Current.NativeWindowHandle; title = $window.Current.Name; pid = $window.Current.ProcessId; class = $window.Current.ClassName; offscreen = $window.Current.IsOffscreen; enabled = $window.Current.IsEnabled; buttons = @($buttons | ForEach-Object { $_.Current.Name }) }
@@ -39,6 +40,10 @@ try {
           $diagnostic.selected_button = $buttonName
           exit 0
         }
+      }
+      } catch [System.Windows.Automation.ElementNotAvailableException] {
+        # Tooltips and owner windows may disappear between UIA snapshots.
+        continue
       }
     }
     Start-Sleep -Milliseconds 200
