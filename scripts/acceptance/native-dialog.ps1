@@ -18,11 +18,12 @@ try {
       if ($window.Current.Name -ne 'Select a screen') { continue }
       foreach ($button in $buttons) {
         # Invoke the actual native dialog control. Never replace the dialog API.
-        if ($button.Current.Name -match 'Screen|Display|Entire') {
+        $buttonName = $button.Current.Name
+        if ($buttonName -match 'Screen|Display|Entire') {
           $invoke = $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
           $invoke.Invoke()
           $diagnostic.invoked = $true
-          $diagnostic.selected_button = $button.Current.Name
+          $diagnostic.selected_button = $buttonName
           exit 0
         }
       }
