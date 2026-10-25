@@ -1,5 +1,240 @@
+diff --git a/apps/desktop/electron/challenge-window.ts b/apps/desktop/electron/challenge-window.ts
+index 55a50da0..c8f387d5 100644
+--- a/apps/desktop/electron/challenge-window.ts
++++ b/apps/desktop/electron/challenge-window.ts
+@@ -115,7 +115,7 @@ export function challengeWindowOptions(session: Session): BrowserWindowConstruct
+     width: 520,
+     height: 720,
+     show: false,
+-    title: 'Hermes — quick check',
++    title: 'MISAKA AGENT — 快速验证',
+     autoHideMenuBar: true,
+     webPreferences: {
+       contextIsolation: true,
+diff --git a/apps/desktop/electron/desktop-uninstall.test.ts b/apps/desktop/electron/desktop-uninstall.test.ts
+index f58bf402..aae16cd3 100644
+--- a/apps/desktop/electron/desktop-uninstall.test.ts
++++ b/apps/desktop/electron/desktop-uninstall.test.ts
+@@ -67,30 +67,30 @@ test('only standard installs allow desktop uninstall; managed kinds have no safe
+ })
+ 
+ test('nativeRemovalInstructions names the steward per kind and OS', () => {
+-  assert.match(nativeRemovalInstructions('nix', 'linux'), /installed by Nix/)
+-  assert.match(nativeRemovalInstructions('nix', 'darwin'), /flake or profile/)
++  assert.match(nativeRemovalInstructions('nix', 'linux'), /由 Nix 安装/)
++  assert.match(nativeRemovalInstructions('nix', 'darwin'), /flake 或 profile/)
+ 
+   for (const platform of ['linux', 'darwin', 'win32']) {
+     const steps = nativeRemovalInstructions('external', platform, '/usr/lib/hermes/hermes')
+-    assert.match(steps, /with that package manager/)
+-    assert.doesNotMatch(steps, /Delete|Trash/)
++    assert.match(steps, /通过原来使用的包管理器/)
++    assert.doesNotMatch(steps, /删除|废纸篓/)
+   }
+ 
+-  assert.match(nativeRemovalInstructions('bundled', 'win32'), /Installed apps/)
++  assert.match(nativeRemovalInstructions('bundled', 'win32'), /已安装的应用/)
+   assert.equal(
+     nativeRemovalInstructions('bundled', 'darwin', '/Applications/Hermes Agent Canary.app'),
+-    'Quit the app and drag Hermes Agent Canary.app from /Applications to the Trash.'
++    '请先退出应用，再将 Hermes Agent Canary.app 从 /Applications 拖入废纸篓。'
+   )
+-  assert.match(nativeRemovalInstructions('bundled', 'darwin'), /drag the Hermes app from Applications to the Trash/)
++  assert.match(nativeRemovalInstructions('bundled', 'darwin'), /将 MISAKA AGENT 应用 从 Applications 拖入废纸篓/)
+   assert.match(
+     nativeRemovalInstructions('bundled', 'linux', '/home/x/Apps/Hermes.AppImage'),
+     /\/home\/x\/Apps\/Hermes\.AppImage/
+   )
+   assert.match(
+     nativeRemovalInstructions('bundled', 'linux', '/opt/hermes/linux-unpacked'),
+-    /app directory at \/opt\/hermes\/linux-unpacked/
++    /删除 \/opt\/hermes\/linux-unpacked 处的应用目录/
+   )
+-  assert.match(nativeRemovalInstructions('bundled', 'linux'), /wherever you saved it/)
++  assert.match(nativeRemovalInstructions('bundled', 'linux'), /从保存位置删除/)
+ })
+ 
+ // --- modeRemovesAgent / modeRemovesUserData ---
+diff --git a/apps/desktop/electron/desktop-uninstall.ts b/apps/desktop/electron/desktop-uninstall.ts
+index 9fb9051a..25cb4771 100644
+--- a/apps/desktop/electron/desktop-uninstall.ts
++++ b/apps/desktop/electron/desktop-uninstall.ts
+@@ -110,7 +110,7 @@ export function registerDesktopUninstallIpc({
+         return {
+           ok: false,
+           error: 'externally-managed',
+-          message: 'This desktop install must be removed through its installer or package manager.'
++          message: '此桌面安装必须通过其安装程序或包管理器卸载。'
+         }
+       }
+ 
+@@ -196,40 +196,37 @@ function allowedUninstallModes(kind: InstallKind): string[] {
+ function nativeRemovalInstructions(kind, platform, appPath = null) {
+   if (kind === 'nix') {
+     return (
+-      'This Hermes desktop app was installed by Nix. Uninstall it the same way you installed it: ' +
+-      'remove hermes-agent from your flake or profile, then rebuild.'
++      '此 MISAKA AGENT 桌面应用由 Nix 安装。请使用原来的安装方式卸载：' +
++      '从 flake 或 profile 中移除 hermes-agent，然后重新构建。'
+     )
+   }
+ 
+   if (kind === 'external') {
+     // Deleting a package manager's files by hand leaves the package registered with missing files.
+-    return (
+-      'Another package manager installed this Hermes desktop app. ' +
+-      'Uninstall it with that package manager, the same way you installed it.'
+-    )
++    return '此 MISAKA AGENT 桌面应用由其他包管理器安装。' + '请通过原来使用的包管理器卸载。'
+   }
+ 
+   if (platform === 'win32') {
+-    return 'To uninstall, go to Windows Settings → Apps → Installed apps.'
++    return '要卸载，请前往 Windows 设置 → 应用 → 已安装的应用。'
+   }
+ 
+   if (platform === 'darwin') {
+     // Name the running bundle: channel builds ship under different .app names.
+-    const bundle = appPath ? path.posix.basename(String(appPath)) : 'the Hermes app'
++    const bundle = appPath ? path.posix.basename(String(appPath)) : 'MISAKA AGENT 应用'
+     const folder = appPath ? path.posix.dirname(String(appPath)) : 'Applications'
+ 
+-    return `Quit the app and drag ${bundle} from ${folder} to the Trash.`
++    return `请先退出应用，再将 ${bundle} 从 ${folder} 拖入废纸篓。`
+   }
+ 
+   if (appPath && /\.appimage$/i.test(String(appPath))) {
+-    return `Delete the AppImage file at ${appPath}.`
++    return `删除 ${appPath} 处的 AppImage 文件。`
+   }
+ 
+   if (appPath) {
+-    return `Delete the app directory at ${appPath}.`
++    return `删除 ${appPath} 处的应用目录。`
+   }
+ 
+-  return 'Delete the Hermes AppImage (or app directory) from wherever you saved it.'
++  return '从保存位置删除 MISAKA AGENT AppImage 文件或应用目录。'
+ }
+ 
+ /**
+diff --git a/apps/desktop/electron/gateway-file-download.test.ts b/apps/desktop/electron/gateway-file-download.test.ts
+index cf604144..d0b0ce67 100644
+--- a/apps/desktop/electron/gateway-file-download.test.ts
++++ b/apps/desktop/electron/gateway-file-download.test.ts
+@@ -376,12 +376,12 @@ test('resolveGatewayFileBackend preserves the legacy route when no connection ow
+ // type to keep it with, so Windows had no default extension to append.
+ test('saveDialogFilters offers the download own type before All Files', () => {
+   assert.deepEqual(saveDialogFilters('Presentation_2026-08-14.pptx'), [
+-    { name: 'PPTX File', extensions: ['pptx'] },
+-    { name: 'All Files', extensions: ['*'] }
++    { name: 'PPTX 文件', extensions: ['pptx'] },
++    { name: '全部文件', extensions: ['*'] }
+   ])
+   assert.deepEqual(saveDialogFilters('report.pdf'), [
+-    { name: 'PDF File', extensions: ['pdf'] },
+-    { name: 'All Files', extensions: ['*'] }
++    { name: 'PDF 文件', extensions: ['pdf'] },
++    { name: '全部文件', extensions: ['*'] }
+   ])
+ })
+ 
+@@ -391,41 +391,41 @@ test('saveDialogFilters keeps All Files last so any name stays saveable', () =>
+   for (const name of ['a.pptx', 'a.tar.gz', 'noext', '.gitignore', '', null]) {
+     const filters = saveDialogFilters(name)
+ 
+-    assert.deepEqual(filters[filters.length - 1], { name: 'All Files', extensions: ['*'] })
++    assert.deepEqual(filters[filters.length - 1], { name: '全部文件', extensions: ['*'] })
+   }
+ })
+ 
+ test('saveDialogFilters normalizes case and reads only the last extension', () => {
+-  assert.deepEqual(saveDialogFilters('SHOUTING.PDF')[0], { name: 'PDF File', extensions: ['pdf'] })
++  assert.deepEqual(saveDialogFilters('SHOUTING.PDF')[0], { name: 'PDF 文件', extensions: ['pdf'] })
+   // Not 'tar.gz': the shell appends one extension, and gz is the one the name
+   // actually ends with.
+-  assert.deepEqual(saveDialogFilters('archive.tar.gz')[0], { name: 'GZ File', extensions: ['gz'] })
++  assert.deepEqual(saveDialogFilters('archive.tar.gz')[0], { name: 'GZ 文件', extensions: ['gz'] })
+ })
+ 
+ test('saveDialogFilters falls back to All Files when there is no usable extension', () => {
+   // A dotfile has no extension in path.extname terms, and inventing one from
+   // the basename would offer to save .gitignore as "GITIGNORE File".
+-  assert.deepEqual(saveDialogFilters('.gitignore'), [{ name: 'All Files', extensions: ['*'] }])
+-  assert.deepEqual(saveDialogFilters('README'), [{ name: 'All Files', extensions: ['*'] }])
+-  assert.deepEqual(saveDialogFilters(''), [{ name: 'All Files', extensions: ['*'] }])
+-  assert.deepEqual(saveDialogFilters(undefined), [{ name: 'All Files', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters('.gitignore'), [{ name: '全部文件', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters('README'), [{ name: '全部文件', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters(''), [{ name: '全部文件', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters(undefined), [{ name: '全部文件', extensions: ['*'] }])
+ })
+ 
+ test('saveDialogFilters refuses an extension it cannot vouch for', () => {
+   // The name can come from a server-supplied Content-Disposition header, so the
+   // extension is whitelisted rather than merely extracted. Rejection is not a
+   // failure: it saves under All Files, which is today's behavior.
+-  assert.deepEqual(saveDialogFilters('x.' + 'a'.repeat(17)), [{ name: 'All Files', extensions: ['*'] }])
+-  assert.deepEqual(saveDialogFilters('x.p p t'), [{ name: 'All Files', extensions: ['*'] }])
+-  assert.deepEqual(saveDialogFilters('x.pp*t'), [{ name: 'All Files', extensions: ['*'] }])
+-  assert.deepEqual(saveDialogFilters('x.p;t'), [{ name: 'All Files', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters('x.' + 'a'.repeat(17)), [{ name: '全部文件', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters('x.p p t'), [{ name: '全部文件', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters('x.pp*t'), [{ name: '全部文件', extensions: ['*'] }])
++  assert.deepEqual(saveDialogFilters('x.p;t'), [{ name: '全部文件', extensions: ['*'] }])
+ })
+ 
+ test('saveDialogFilters reads the basename, not a directory component', () => {
+   // filenameFromContentDisposition already reduces to a basename; this makes
+   // the helper safe on its own rather than only in that company.
+   assert.deepEqual(saveDialogFilters('/tmp/a.pdf/report.pptx')[0], {
+-    name: 'PPTX File',
++    name: 'PPTX 文件',
+     extensions: ['pptx']
+   })
+ })
+diff --git a/apps/desktop/electron/gateway-file-download.ts b/apps/desktop/electron/gateway-file-download.ts
+index 37a652d8..5ffac2ec 100644
+--- a/apps/desktop/electron/gateway-file-download.ts
++++ b/apps/desktop/electron/gateway-file-download.ts
+@@ -337,7 +337,7 @@ export interface SaveDialogFilter {
+   extensions: string[]
+ }
+ 
+-const ALL_FILES: SaveDialogFilter = { name: 'All Files', extensions: ['*'] }
++const ALL_FILES: SaveDialogFilter = { name: '全部文件', extensions: ['*'] }
+ 
+ // Build the Electron save-dialog `filters` for a resolved download name.
+ //
+@@ -363,7 +363,7 @@ export function saveDialogFilters(filename: unknown): SaveDialogFilter[] {
+     return [ALL_FILES]
+   }
+ 
+-  return [{ name: `${ext.toUpperCase()} File`, extensions: [ext] }, ALL_FILES]
++  return [{ name: `${ext.toUpperCase()} 文件`, extensions: [ext] }, ALL_FILES]
+ }
+ 
+ // Preserve file URIs: only the gateway knows its native drive/UNC semantics.
+@@ -474,7 +474,7 @@ export async function finalizeGatewayDownload(
+     const result: GatewaySaveDialogResult = await deps.showSaveDialog({
+       defaultPath: filename,
+       filters: saveDialogFilters(filename),
+-      title: 'Save File'
++      title: '保存文件'
+     })
+ 
+     if (result.canceled || !result.filePath) {
+@@ -545,7 +545,7 @@ export async function saveGatewayDownload(
+   const result: GatewaySaveDialogResult = await deps.showSaveDialog({
+     defaultPath: context.suggested || context.fallbackName,
+     filters: saveDialogFilters(context.suggested || context.fallbackName),
+-    title: 'Save File'
++    title: '保存文件'
+   })
+ 
+   if (result.canceled || !result.filePath) {
 diff --git a/apps/desktop/electron/main.ts b/apps/desktop/electron/main.ts
-index cfad04e1..0ec3c115 100644
+index cfad04e1..2ffeaee6 100644
 --- a/apps/desktop/electron/main.ts
 +++ b/apps/desktop/electron/main.ts
 @@ -381,6 +381,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL, mediaProtocolDownloadName }
@@ -92,6 +327,15 @@ index cfad04e1..0ec3c115 100644
            reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
          })
        }
+@@ -16507,7 +16508,7 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
+   }
+ 
+   const result = await dialog.showOpenDialog(mainWindow, {
+-    title: options?.title || 'Add context',
++    title: options?.title || '添加上下文',
+     defaultPath: resolvedDefaultPath,
+     properties: properties as any,
+     filters: Array.isArray(options?.filters) ? options.filters : undefined
 @@ -16930,18 +16931,18 @@ const quickEntrySubmitRelay = createQuickEntrySubmitRelay({
  // the primary renderer confirms delivery (#85590).
  ipcMain.handle('hermes:quick-entry:submit', (event, payload) => {
@@ -123,6 +367,50 @@ index cfad04e1..0ec3c115 100644
      properties: ['openDirectory', 'createDirectory'],
      defaultPath: readDefaultProjectDir() || app.getPath('home')
    })
+diff --git a/apps/desktop/electron/minimize-to-tray.test.ts b/apps/desktop/electron/minimize-to-tray.test.ts
+index 23c99ec8..dcf2d2e7 100644
+--- a/apps/desktop/electron/minimize-to-tray.test.ts
++++ b/apps/desktop/electron/minimize-to-tray.test.ts
+@@ -32,7 +32,8 @@ vi.mock('electron', () => ({
+ 
+       native.trays.push(this)
+     }
+-    setToolTip() {}
++    tooltip = ''
++    setToolTip(text: string) { this.tooltip = text }
+     setContextMenu(menu: any[]) {
+       this.menu = menu
+     }
+@@ -287,6 +288,8 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
+   main.restore()
+   await native.ipc.get('hermes:minimize-to-tray:set')!(null, true)
+   expect(native.ipc.get('hermes:minimize-to-tray:get')!()).toEqual({ enabled: true, available: true })
++  expect(native.trays[0].tooltip).toBe('MISAKA AGENT')
++  expect(native.trays[0].menu.map((item: { label?: string }) => item.label).filter(Boolean)).toEqual(['显示 MISAKA AGENT', '退出 MISAKA AGENT'])
+   main.minimize()
+   await flushDeferredHide()
+   expect(main.destroyed).toBe(false)
+diff --git a/apps/desktop/electron/minimize-to-tray.ts b/apps/desktop/electron/minimize-to-tray.ts
+index 6551e254..28bb9ef3 100644
+--- a/apps/desktop/electron/minimize-to-tray.ts
++++ b/apps/desktop/electron/minimize-to-tray.ts
+@@ -183,13 +183,13 @@ export function createMinimizeToTray(options: Options) {
+             height: process.platform === 'darwin' ? 18 : 24
+           })
+         )
+-        tray.setToolTip('Hermes')
++        tray.setToolTip('MISAKA AGENT')
+         tray.setContextMenu(
+           Menu.buildFromTemplate([
+-            { label: 'Show Hermes', click: restore },
++            { label: '显示 MISAKA AGENT', click: restore },
+             { type: 'separator' },
+             // Do not bypass the ordinary active-work confirmation or teardown.
+-            { label: 'Quit Hermes', click: () => app.quit() }
++            { label: '退出 MISAKA AGENT', click: () => app.quit() }
+           ])
+         )
+ 
 diff --git a/apps/desktop/electron/misaka-native-menu.test.ts b/apps/desktop/electron/misaka-native-menu.test.ts
 new file mode 100644
 index 00000000..aff62d90
@@ -222,6 +510,61 @@ index 00000000..2c4f4bae
 +    ...(Array.isArray(item.submenu) ? { submenu: localizeMisakaMenu(item.submenu) } : {})
 +  }))
 +}
+diff --git a/apps/desktop/electron/portal-session.ts b/apps/desktop/electron/portal-session.ts
+index ef96a16c..27b3ae6b 100644
+--- a/apps/desktop/electron/portal-session.ts
++++ b/apps/desktop/electron/portal-session.ts
+@@ -233,7 +233,7 @@ export function createPortalSession({
+       // hang the discovery call behind an invisible window.
+       const outcome = await driveCookieWindow(sess, previous, {
+         kind: 'portal-renew',
+-        title: 'Renewing Hermes Cloud session…',
++        title: '正在续期 Hermes Cloud 会话…',
+         show: false,
+         pollMs: 500,
+         deadlineMs: 12_000
+@@ -259,24 +259,24 @@ export function createPortalSession({
+   // must not close the window before the portal can replace it.
+   async function openPortalLoginWindow(): Promise<void> {
+     if (!isReady()) {
+-      throw new Error('Desktop is not ready to start a Hermes Cloud sign-in.')
++      throw new Error('桌面尚未就绪，暂时无法开始 Hermes Cloud 登录。')
+     }
+ 
+     const sess = getOauthSession()
+ 
+     if (!sess) {
+-      throw new Error('OAuth session partition is unavailable.')
++      throw new Error('OAuth 会话分区不可用。')
+     }
+ 
+     const outcome = await driveCookieWindow(sess, await readAccessCookies(), {
+       kind: 'portal',
+-      title: 'Sign in to Hermes Cloud',
++      title: '登录 Hermes Cloud',
+       show: true,
+       pollMs: 750
+     })
+ 
+     if (outcome !== 'landed') {
+-      throw outcome instanceof Error ? outcome : new Error('Sign-in window closed before authentication completed.')
++      throw outcome instanceof Error ? outcome : new Error('身份验证完成前，登录窗口已关闭。')
+     }
+   }
+ 
+diff --git a/apps/desktop/electron/quick-entry.ts b/apps/desktop/electron/quick-entry.ts
+index ec24a21f..f71bee4f 100644
+--- a/apps/desktop/electron/quick-entry.ts
++++ b/apps/desktop/electron/quick-entry.ts
+@@ -89,7 +89,7 @@ export function createQuickEntrySubmitRelay(options: {
+           reconcilable.add(correlationId)
+           resolve({
+             code: 'timeout',
+-            message: 'Hermes has not confirmed the prompt yet — it may still be delivered.',
++            message: 'MISAKA AGENT 尚未确认接收任务，任务仍可能送达。',
+             ok: false,
+             retryable: false
+           })
 diff --git a/apps/desktop/electron/region-capture-controller.test.ts b/apps/desktop/electron/region-capture-controller.test.ts
 index 7d0e1042..a31558b7 100644
 --- a/apps/desktop/electron/region-capture-controller.test.ts
@@ -1399,6 +1742,37 @@ index 80bac5ba..f42edd28 100644
  // Schema-side select overrides for desktop-relevant enum fields whose
  // backend schema only declares a string type.
  export const ENUM_OPTIONS: Record<string, string[]> = {
+diff --git a/apps/desktop/src/app/settings/local-models-browse.tsx b/apps/desktop/src/app/settings/local-models-browse.tsx
+index 4718d388..c77d14b4 100644
+--- a/apps/desktop/src/app/settings/local-models-browse.tsx
++++ b/apps/desktop/src/app/settings/local-models-browse.tsx
+@@ -58,7 +58,7 @@ function browsedModelId(group: HFFileGroup): string {
+ export function LocalModelsBrowseSection(): ReactElement {
+   const owner: LocalModelsOwner = useScopedLocalModelsOwner()
+   const client: QueryClient = useQueryClient()
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const copy = t.settings.localModels
+   const onChanged = useCallback((): void => refreshLocalModels(owner, client), [owner, client])
+ 
+@@ -165,7 +165,7 @@ export function LocalModelsBrowseSection(): ReactElement {
+ 
+   const sideload = useCallback((): void => {
+     window.hermesDesktop
+-      .selectPaths({ filters: [{ extensions: ['gguf'], name: 'GGUF models' }], title: copy.sideloadTitle })
++      .selectPaths({ filters: [{ extensions: ['gguf'], name: locale === 'zh' ? 'GGUF 模型' : 'GGUF models' }], title: copy.sideloadTitle })
+       .then((paths: string[]): Promise<void> | undefined => {
+         if (!paths.length) {
+           return
+@@ -190,7 +190,7 @@ export function LocalModelsBrowseSection(): ReactElement {
+           notifyError(e, copy.browseTitle)
+         }
+       })
+-  }, [copy.browseTitle, copy.sideloadAlreadyPresent, copy.sideloadDone, copy.sideloadTitle, onChanged, owner])
++  }, [locale, copy.browseTitle, copy.sideloadAlreadyPresent, copy.sideloadDone, copy.sideloadTitle, onChanged, owner])
+ 
+   return (
+     <SettingsSection
 diff --git a/apps/desktop/src/app/settings/memory/connect.tsx b/apps/desktop/src/app/settings/memory/connect.tsx
 index 1c093179..88fdbbe4 100644
 --- a/apps/desktop/src/app/settings/memory/connect.tsx

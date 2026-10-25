@@ -17,7 +17,7 @@
 | Select a screen / Cancel | 选择屏幕 / 取消 |
 | Screen 1（截图选择按钮） | 屏幕 1 |
 
-新会话标题按当前语言解析；输入框提示会在语言改变时更新，不会保留启动时选中的英文。用户自己命名为 `New session` 的会话仍显示其原名。设置中的服务商说明、窗口控制、原生菜单、保存和目录选择对话框、截图覆盖层、工具和消息状态、表情控件、媒体预览与通用缩放控件均补齐中文。原生加载失败恢复页显示中文说明和重新加载操作，实际错误详情及修复命令仍原样保留并转义。
+新会话标题按当前语言解析；输入框提示会在语言改变时更新，不会保留启动时选中的英文。用户自己命名为 `New session` 的会话仍显示其原名。设置中的服务商说明、窗口控制、原生菜单、系统托盘、保存和目录选择对话框、截图覆盖层、工具和消息状态、表情控件、媒体预览与通用缩放控件均补齐中文。远程文件下载、Cloud 登录动作、快速输入和原生卸载说明也使用中文，保留实际第三方服务名称。原生加载失败恢复页显示中文说明和重新加载操作，实际错误详情及修复命令仍原样保留并转义。
 
 ## 验证
 
@@ -34,7 +34,7 @@
 ../../node_modules/.bin/vitest run --project electron \
   electron/misaka-native-menu.test.ts electron/region-capture.test.ts \
   electron/region-capture-controller.test.ts electron/region-capture-geometry.test.ts \
-  electron/renderer-load-error-page.test.ts
+  electron/renderer-load-error-page.test.ts electron/minimize-to-tray.test.ts
 ```
 
 测试覆盖新配置、旧英文配置的一次迁移、重启后保留手动语言、进行中的迁移与手动保存排序、配置来源隔离、语言切换后的输入框提示、默认标题、推理强度标签、中文目录结构与插值、原生菜单动作保留、截图流程与恢复页安全转义。设置保存、服务商说明即时切换、Markdown 媒体和引用数据另有对应回归测试。
