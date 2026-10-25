@@ -194,16 +194,9 @@ async function realCompactCrop(application, compact, output) {
 }
 
 export async function verifyDashboard(main, output) {
-  await main.getByRole('button', { name: /^(Capabilities|技能与工具)$/ }).click()
-  await main.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
-  await main.getByPlaceholder(/^(Search plugins|搜索插件)$/).fill('云端本地协同')
-  await main.locator('[data-catalog-cards="plugins"], [data-catalog-list="plugins"]')
-    .getByRole('button', { name: '云端本地协同', exact: true }).click()
-  const desktop = main.getByRole('switch', { name: /^(Desktop|桌面): 云端本地协同$/ })
-  await desktop.check()
-  assert.equal(await desktop.getAttribute('aria-checked'), 'true')
-  await main.getByRole('button', { name: /^(Close|关闭)$/ }).last().click()
-  await main.getByRole('button', { name: '额度总览', exact: true }).click()
+  const entry = main.getByRole('button', { name: '额度总览', exact: true })
+  await entry.waitFor({ state: 'visible', timeout: 30_000 })
+  await entry.click()
   const dashboard = main.getByRole('main', { name: 'MISAKA AGENT 额度总览', exact: true })
   await dashboard.getByRole('heading', { name: '账号用量', exact: true }).waitFor({ state: 'visible' })
   const cards = dashboard.locator('.misaka-account-grid .misaka-quota-card')
@@ -221,7 +214,8 @@ export async function verifyDashboard(main, output) {
   assert(reasons.length >= 1 && reasons.every(reason => reason.trim()))
   await main.screenshot({ path: join(output, '03a-windows-native-quota-dashboard.png') })
   await main.getByRole('button', { name: /^新建会话/ }).first().click()
-  return { actual_core_desktop_enabled: true, real_refresh_completed: true, refreshed_time: refreshed,
+  return { actual_core_desktop_default_enabled: true, core_not_manually_enabled_by_harness: true,
+    real_refresh_completed: true, refreshed_time: refreshed,
     account_states: states, unknown_reasons: reasons, fabricated_progress_bars: 0,
     real_provider_balance: 'not_tested_no_account_credentials', offline_acceptance_profile: true }
 }

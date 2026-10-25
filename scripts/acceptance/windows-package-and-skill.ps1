@@ -21,7 +21,13 @@ $configuration = @{
   auxiliary = @{ title_generation = @{ enabled = $false } }
   approvals = @{ mode = 'manual' }
 }
-$configuration | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 (Join-Path $ProfileDirectory 'config.yaml')
+$providerOverrides = Join-Path $env:RUNNER_TEMP 'misaka-offline-provider-overrides.json'
+$configuration | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 $providerOverrides
+# Preserve the actual preparation's native plugin admission and language state.
+# The harness must not turn the core on itself or erase its real default.
+python -c 'import json,pathlib,sys,yaml; target=pathlib.Path(sys.argv[1]); current=(yaml.safe_load(target.read_text(encoding="utf-8-sig")) or {}) if target.is_file() else {}; current.update(json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8-sig"))); target.write_text(json.dumps(current,ensure_ascii=False),encoding="utf-8")' (Join-Path $ProfileDirectory 'config.yaml') $providerOverrides
+if ($LASTEXITCODE -ne 0) { throw 'Offline provider fixture could not preserve the actual prepared configuration.' }
+Remove-Item $providerOverrides
 'ACCEPTANCE_ONLY_API_KEY=isolated-no-inference' | Set-Content -Encoding ascii (Join-Path $ProfileDirectory '.env')
 $coreArchive = Join-Path $Repository "dist/extensions/orchestrator-core-$version.zip"
 $preparedCoreSha = (Get-FileHash $coreArchive -Algorithm SHA256).Hash
@@ -33,10 +39,8 @@ if ((Get-FileHash $coreArchive -Algorithm SHA256).Hash -ne $preparedCoreSha) {
 $pointerArchive = Join-Path $Repository "dist/extensions/smart-pointer-$version.zip"
 python -m src.extension_packages --hermes-home $ProfileDirectory install $pointerArchive
 if ($LASTEXITCODE -ne 0) { throw 'Actual optional pointer ZIP installation failed.' }
-foreach ($plugin in @('orchestrator-core', 'smart-pointer')) {
-  & $Launcher --profile default plugins enable $plugin
-  if ($LASTEXITCODE -ne 0) { throw "Native plugin admission failed for $plugin." }
-}
+& $Launcher --profile default plugins enable smart-pointer
+if ($LASTEXITCODE -ne 0) { throw 'Native optional pointer admission failed.' }
 $skillArchive = Join-Path $env:RUNNER_TEMP 'misaka-agent-skill.zip'
 python (Join-Path $Repository 'scripts/build_agent_skill.py') --output $skillArchive
 if ($LASTEXITCODE -ne 0) { throw 'Standalone Agent Skill ZIP build failed.' }
@@ -51,6 +55,7 @@ if (-not $setupResult.ok -or $setupResult.contains_credentials -ne $false) { thr
 $report = [ordered]@{
   skill_archive_sha256 = (Get-FileHash $skillArchive -Algorithm SHA256).Hash.ToLowerInvariant()
   actual_zip_installed = $true; same_native_launcher_and_home = $true
+  core_not_manually_enabled_by_harness = $true
   model_inference = 'not_invoked'; real_provider_credentials = 'not_used'
   labelled_offline_endpoint_for_unsent_draft_only = $true
   commands = @{}

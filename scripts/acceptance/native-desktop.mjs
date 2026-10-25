@@ -142,6 +142,8 @@ try {
     await chooseLater.waitFor({ state: 'hidden', timeout: 15_000 })
     report.checks.push('Native choose-provider-later control exposes the real chat without an account')
   }
+  await page.getByRole('button', { name: '额度总览', exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+  report.checks.push('Fresh native preparation exposes the Chinese quota entry without manually enabling the core Desktop half')
   await page.screenshot({ path: join(output, '02-windows-native-chat.png') })
   report.screenshots.push('02-windows-native-chat.png')
 
