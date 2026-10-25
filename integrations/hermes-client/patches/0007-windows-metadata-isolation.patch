@@ -1,0 +1,775 @@
+diff --git a/apps/desktop/electron/region-capture.ts b/apps/desktop/electron/region-capture.ts
+index 2e84d80c..9b8b31fc 100644
+--- a/apps/desktop/electron/region-capture.ts
++++ b/apps/desktop/electron/region-capture.ts
+@@ -7,12 +7,20 @@ import { selectNativeScreenRegion } from './region-capture-overlay'
+ import type { RegionCaptureResult } from './region-capture-types'
+ import { readWindowBelow } from './window-below'
+ 
+-async function snapshotAppContext(win: BrowserWindow) {
++async function snapshotAppContext(win: BrowserWindow, signal?: AbortSignal) {
+   let timer: ReturnType<typeof setTimeout>
+ 
+   try {
+     const titles = process.platform !== 'darwin' || systemPreferences.getMediaAccessStatus('screen') === 'granted'
+ 
++    // Windows openWindows() is async only at its JS wrapper: the DLL may block
++    // synchronously. Its bounded utility process keeps this thread responsive.
++    if (process.platform === 'win32') {
++      const result = await readWindowBelow(process.pid, win.getBounds(), titles, { signal, timeoutMs: 750 })
++
++      return result && 'window' in result ? result.window : null
++    }
++
+     const result = await Promise.race([
+       readWindowBelow(process.pid, win.getBounds(), titles),
+       new Promise<null>(resolve => {
+@@ -163,9 +171,11 @@ export function installRegionCapture({
+     }
+ 
+     const owner = event.sender.id
++    const metadataAbort = new AbortController()
+     let invalidated = false
+ 
+     const cancel = () => {
++      metadataAbort.abort()
+       invalidated = true
+       controller.cancel(owner)
+     }
+@@ -182,7 +192,7 @@ export function installRegionCapture({
+     try {
+       // Sample before the source picker/overlay takes focus. The existing
+       // provider skips our own windows and never prompts for title access.
+-      const appContext = await snapshotAppContext(win)
++      const appContext = await snapshotAppContext(win, metadataAbort.signal)
+ 
+       if (invalidated) {
+         return { status: 'cancelled' }
+@@ -213,6 +223,8 @@ export function installRegionCapture({
+ 
+       return result
+     } finally {
++      metadataAbort.abort()
++
+       if (hiddenOwners.delete(owner) && !win.isDestroyed()) {
+         win.showInactive()
+       }
+diff --git a/apps/desktop/electron/window-below.ts b/apps/desktop/electron/window-below.ts
+index 16413050..0008643b 100644
+--- a/apps/desktop/electron/window-below.ts
++++ b/apps/desktop/electron/window-below.ts
+@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url'
+ import { app } from 'electron'
+ 
+ import { readHyprlandWindows } from './hyprland'
++import { enumerateWindowsIsolated } from './window-enumeration-process'
+ 
+ export interface EnumeratedWindow {
+   app: string
+@@ -295,9 +296,13 @@ async function enumerateViaGetWindows(titlesAvailable: boolean): Promise<Enumera
+  */
+ export async function enumerateWindowsFrontToBack(
+   selfPid: number,
+-  titlesAvailable: boolean
++  titlesAvailable: boolean,
++  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+ ): Promise<EnumeratedWindow[] | EnumerationFailure> {
+-  const result = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
++  const result =
++    process.platform === 'win32'
++      ? await enumerateWindowsIsolated(options)
++      : ((await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable)))
+ 
+   return enumerationFailed(result)
+     ? { reason: getWindowsFailureReason(result.reason, process.platform, process.arch) }
+@@ -307,9 +312,10 @@ export async function enumerateWindowsFrontToBack(
+ export async function readWindowBelow(
+   selfPid: number,
+   selfBounds: EnumeratedWindow['bounds'],
+-  titlesAvailable: boolean
++  titlesAvailable: boolean,
++  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+ ): Promise<WindowBelowResult | WindowBelowUnavailable> {
+-  const windows = await enumerateWindowsFrontToBack(selfPid, titlesAvailable)
++  const windows = await enumerateWindowsFrontToBack(selfPid, titlesAvailable, options)
+ 
+   if (enumerationFailed(windows)) {
+     return {
+diff --git a/apps/desktop/electron/window-enumeration-client.test.ts b/apps/desktop/electron/window-enumeration-client.test.ts
+new file mode 100644
+index 00000000..1688a3db
+--- /dev/null
++++ b/apps/desktop/electron/window-enumeration-client.test.ts
+@@ -0,0 +1,170 @@
++import { spawn } from 'node:child_process'
++import { EventEmitter, once } from 'node:events'
++import { PassThrough } from 'node:stream'
++
++import { describe, expect, it } from 'vitest'
++
++import { createWindowEnumerationClient, type MetadataChild } from './window-enumeration-client'
++import { metadataLine, WINDOW_METADATA_MAX_BYTES } from './window-enumeration-protocol'
++
++const row = {
++  app: 'Microsoft Word',
++  title: 'Real transport fixture',
++  id: 10,
++  pid: 20,
++  bounds: { x: 0, y: 0, width: 800, height: 600 }
++}
++
++describe('actual metadata child lifecycle', () => {
++  it('accepts a bounded child result and reaps the actual process', async () => {
++    let exited: Promise<unknown[]> = Promise.resolve([])
++
++    const client = createWindowEnumerationClient(() => {
++      const child = spawn(
++        process.execPath,
++        ['-e', `process.stdout.write(${JSON.stringify(metadataLine([row]))});setInterval(()=>{},1000)`],
++        { stdio: ['ignore', 'pipe', 'ignore'] }
++      )
++
++      exited = once(child, 'exit')
++
++      return child
++    })
++
++    expect(await client.read('fixture', { timeoutMs: 1500 })).toEqual([row])
++    await exited
++    expect(client.activeCount).toBe(0)
++  })
++
++  it('a synchronous infinite native-equivalent loop cannot block the parent timeout; real child exits', async () => {
++    let exited: Promise<unknown[]> = Promise.resolve([])
++    let entered: Promise<unknown[]> = Promise.resolve([])
++
++    const client = createWindowEnumerationClient(() => {
++      const child = spawn(process.execPath, ['-e', 'process.stderr.write("entered");while(true){}'], {
++        stdio: ['ignore', 'pipe', 'pipe']
++      })
++
++      exited = once(child, 'exit')
++      entered = once(child.stderr!, 'data')
++
++      return child
++    })
++
++    const result = client.read('blocked', { timeoutMs: 1000 })
++    await entered
++    expect(await result).toHaveProperty('reason', 'window metadata enumeration timed out')
++    await exited
++    expect(client.activeCount).toBe(0)
++  })
++
++  it('owner cancellation terminates an actual blocked child instead of only abandoning its promise', async () => {
++    const abort = new AbortController()
++
++    let exited: Promise<unknown[]> = Promise.resolve([]),
++      entered: Promise<unknown[]> = Promise.resolve([])
++
++    const client = createWindowEnumerationClient(() => {
++      const child = spawn(process.execPath, ['-e', 'process.stderr.write("entered");while(true){}'], {
++        stdio: ['ignore', 'pipe', 'pipe']
++      })
++
++      exited = once(child, 'exit')
++      entered = once(child.stderr!, 'data')
++
++      return child
++    })
++
++    const result = client.read('blocked', { signal: abort.signal, timeoutMs: 2000 })
++    await entered
++    abort.abort()
++    expect(await result).toHaveProperty('reason', 'window metadata enumeration was cancelled')
++    await exited
++    expect(client.activeCount).toBe(0)
++  })
++
++  it('limits HUD/tool/capture concurrency and kills every owned process on quit', async () => {
++    const exits: Promise<unknown[]>[] = []
++    let spawned = 0
++
++    const client = createWindowEnumerationClient(() => {
++      spawned += 1
++      const child = spawn(process.execPath, ['-e', 'while(true){}'], { stdio: ['ignore', 'pipe', 'ignore'] })
++      exits.push(once(child, 'exit'))
++
++      return child
++    })
++
++    const first = client.read('one'),
++      second = client.read('two')
++
++    expect(await client.read('three')).toHaveProperty('reason', expect.stringContaining('busy'))
++    expect(spawned).toBe(2)
++    client.stopAll()
++    await Promise.all([first, second, ...exits])
++    expect(client.activeCount).toBe(0)
++  })
++
++  it('kills a late OS spawn after cancellation and ignores stale output', async () => {
++    class DeferredChild extends EventEmitter implements MetadataChild {
++      stdout = new PassThrough()
++      kills = 0
++      kill() {
++        this.kills += 1
++
++        return true
++      }
++    }
++
++    const child = new DeferredChild(),
++      abort = new AbortController()
++
++    const client = createWindowEnumerationClient(() => child)
++    const result = client.read('late', { signal: abort.signal })
++    abort.abort()
++    await result
++    child.emit('spawn')
++    child.stdout.write(metadataLine([row]))
++    expect(child.kills).toBeGreaterThanOrEqual(2)
++    child.emit('exit', 1)
++    expect(client.activeCount).toBe(0)
++  })
++
++
++  it('drains a utility stdout packet even when process exit is delivered first', async () => {
++    class ExitedChild extends EventEmitter implements MetadataChild {
++      stdout = new PassThrough()
++      kill() { return true }
++    }
++    const child = new ExitedChild()
++    const client = createWindowEnumerationClient(() => child)
++    const result = client.read('already-exited')
++    child.emit('exit', 0)
++    child.stdout.end(metadataLine([row]))
++    expect(await result).toEqual([row])
++    expect(client.activeCount).toBe(0)
++  })
++
++  it('rejects excess output and kills its actual child', async () => {
++    let exited: Promise<unknown[]> = Promise.resolve([])
++
++    const client = createWindowEnumerationClient(() => {
++      const child = spawn(
++        process.execPath,
++        ['-e', `process.stdout.write('x'.repeat(${WINDOW_METADATA_MAX_BYTES + 1}));setInterval(()=>{},1000)`],
++        { stdio: ['ignore', 'pipe', 'ignore'] }
++      )
++
++      exited = once(child, 'exit')
++
++      return child
++    })
++
++    expect(await client.read('too-large', { timeoutMs: 1500 })).toHaveProperty(
++      'reason',
++      'the window metadata helper exceeded its output limit'
++    )
++    await exited
++    expect(client.activeCount).toBe(0)
++  })
++})
+diff --git a/apps/desktop/electron/window-enumeration-client.ts b/apps/desktop/electron/window-enumeration-client.ts
+new file mode 100644
+index 00000000..bff8e2d2
+--- /dev/null
++++ b/apps/desktop/electron/window-enumeration-client.ts
+@@ -0,0 +1,131 @@
++import type { EnumeratedWindow, EnumerationFailure } from './window-below'
++import { parseMetadataLine, WINDOW_METADATA_MAX_BYTES } from './window-enumeration-protocol'
++
++export interface MetadataChild {
++  stdout: Pick<NodeJS.ReadableStream, 'on'> | null
++  kill(): boolean
++  on(event: string, listener: (...args: any[]) => void): unknown
++}
++
++/** The native DLL can block synchronously forever. A Promise.race on the main
++ * thread cannot interrupt it; a real owned process must be terminated. */
++export function createWindowEnumerationClient(spawn: (modulePath: string) => MetadataChild) {
++  const active = new Set<{ stop: () => void }>()
++
++  return {
++    get activeCount() {
++      return active.size
++    },
++    // before-quit can be declined by the native quit guard. Cancel existing
++    // work without permanently disabling metadata if the person stays.
++    stopAll() {
++      for (const item of active) {item.stop()}
++    },
++    read(
++      modulePath: string,
++      { signal, timeoutMs = 750 }: { signal?: AbortSignal; timeoutMs?: number } = {}
++    ): Promise<EnumeratedWindow[] | EnumerationFailure> {
++      if (signal?.aborted) {return Promise.resolve({ reason: 'window metadata enumeration was cancelled' })}
++
++      // HUD polling, tools and capture share this strict bound. Each permitted
++      // request still samples at its own requested time; no stale cache reuse.
++      if (active.size >= 2)
++        {return Promise.resolve({
++          reason: 'window metadata enumeration is busy; retry when the current sample finishes'
++        })}
++
++      return new Promise(resolve => {
++        let child: MetadataChild | undefined
++        let settled = false
++        let buffers: Buffer[] = []
++        let size = 0
++
++        const terminate = () => {
++          try {
++            child?.kill()
++          } catch {
++            /* owned utility already exited */
++          }
++        }
++
++        const finish = (result: EnumeratedWindow[] | EnumerationFailure) => {
++          if (settled) {return}
++          settled = true
++          clearTimeout(timer)
++          signal?.removeEventListener('abort', abort)
++          buffers = []
++          terminate()
++          resolve(result)
++        }
++
++        const abort = () => finish({ reason: 'window metadata enumeration was cancelled' })
++
++        const slot = {
++          stop: () => {
++            if (settled) {terminate()}
++            else {abort()}
++          }
++        }
++
++        active.add(slot)
++
++        const timer = setTimeout(
++          () => finish({ reason: 'window metadata enumeration timed out' }),
++          Math.max(25, Math.min(3000, timeoutMs))
++        )
++
++        signal?.addEventListener('abort', abort, { once: true })
++
++        try {
++          child = spawn(modulePath)
++          // An abort can beat the OS spawn. Keep this listener until exit so
++          // a late-created process is killed instead of becoming an orphan.
++          child.on('spawn', () => {
++            if (settled) {terminate()}
++          })
++          child.on('error', () => finish({ reason: 'the window metadata utility process failed' }))
++          child.on('exit', () => {
++            active.delete(slot)
++
++            // UtilityProcess can emit exit before the last stdout data/end
++            // event. Retain the bounded pipe until it drains or the deadline.
++            if (!child?.stdout) {finish({ reason: 'the window metadata helper exited without a response' })}
++          })
++
++          if (settled) {terminate()}
++
++          if (!child.stdout) {
++            finish({ reason: 'the window metadata helper has no bounded output pipe' })
++
++            return
++          }
++
++          child.stdout.on('end', () =>
++            finish({ reason: 'the window metadata helper exited without a response' })
++          )
++          child.stdout.on('error', () =>
++            finish({ reason: 'the window metadata helper output pipe failed' })
++          )
++          child.stdout.on('data', chunk => {
++            if (settled) {return}
++            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
++            size += bytes.length
++
++            if (size > WINDOW_METADATA_MAX_BYTES) {
++              finish({ reason: 'the window metadata helper exceeded its output limit' })
++
++              return
++            }
++
++            buffers.push(bytes)
++
++            if (bytes.includes(10)) {finish(parseMetadataLine(Buffer.concat(buffers).toString('utf8')))}
++          })
++        } catch {
++          active.delete(slot)
++          finish({ reason: 'the window metadata utility process could not be started' })
++        }
++      })
++    }
++  }
++}
+diff --git a/apps/desktop/electron/window-enumeration-process.ts b/apps/desktop/electron/window-enumeration-process.ts
+new file mode 100644
+index 00000000..0b44bde0
+--- /dev/null
++++ b/apps/desktop/electron/window-enumeration-process.ts
+@@ -0,0 +1,59 @@
++import fs from 'node:fs'
++import path from 'node:path'
++
++import { app, utilityProcess } from 'electron'
++
++import { createWindowEnumerationClient, type MetadataChild } from './window-enumeration-client'
++
++const outsideAsar = (value: string) => value.replace(/app\.asar(?=$|[\\/])/, 'app.asar.unpacked')
++
++const clients = createWindowEnumerationClient(modulePath => {
++  const helper = outsideAsar(path.join(app.getAppPath(), 'dist', 'window-enumeration-worker.mjs'))
++
++  // No model/provider credentials, login tickets, NODE_OPTIONS or foreign
++  // module-resolution knobs are required to read local window metadata.
++  const allowed = new Set([
++    'path',
++    'systemroot',
++    'windir',
++    'temp',
++    'tmp',
++    'userprofile',
++    'localappdata',
++    'appdata',
++    'pathext',
++    'lang',
++    'lc_all'
++  ])
++
++  const env = Object.fromEntries(
++    Object.entries(process.env).filter(([key, value]) => value !== undefined && allowed.has(key.toLowerCase()))
++  )
++
++  return utilityProcess.fork(helper, [modulePath], {
++    env,
++    execArgv: [],
++    stdio: ['ignore', 'pipe', 'ignore'],
++    serviceName: 'MISAKA Window Metadata'
++  }) as MetadataChild
++})
++
++let quitHook = false
++
++export function enumerateWindowsIsolated(options: { signal?: AbortSignal; timeoutMs?: number } = {}) {
++  const modulePath = outsideAsar(path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js'))
++  const helperPath = outsideAsar(path.join(app.getAppPath(), 'dist', 'window-enumeration-worker.mjs'))
++
++  if (!app.isReady() || !fs.existsSync(modulePath) || !fs.existsSync(helperPath)) {
++    return Promise.resolve({
++      reason: 'the prepared window metadata helper or matching native module is missing; rebuild the native client'
++    })
++  }
++
++  if (!quitHook) {
++    quitHook = true
++    app.on('before-quit', () => clients.stopAll())
++  }
++
++  return clients.read(modulePath, options)
++}
+diff --git a/apps/desktop/electron/window-enumeration-protocol.test.ts b/apps/desktop/electron/window-enumeration-protocol.test.ts
+new file mode 100644
+index 00000000..5165e49a
+--- /dev/null
++++ b/apps/desktop/electron/window-enumeration-protocol.test.ts
+@@ -0,0 +1,81 @@
++import { describe, expect, it } from 'vitest'
++
++import { pickWindowBelow } from './window-below'
++import {
++  metadataLine,
++  parseMetadataLine,
++  projectWindowMetadata,
++  WINDOW_METADATA_MAX_BYTES
++} from './window-enumeration-protocol'
++
++describe('bounded real window metadata transport', () => {
++  it('retains real app/title/bounds and z-order for Word and Excel context', () => {
++    const raw = [
++      {
++        id: 1,
++        owner: { name: 'MISAKA AGENT', processId: 7 },
++        title: '智能指针',
++        bounds: { x: 10, y: 10, width: 360, height: 180 }
++      },
++      {
++        id: 2,
++        owner: { name: 'Microsoft Word', processId: 8 },
++        title: 'Report.docx — Word',
++        bounds: { x: -20, y: 0, width: 900, height: 700 },
++        ignored_private_field: 'must not copy'
++      },
++      {
++        id: 3,
++        owner: { name: 'Microsoft Excel', processId: 9 },
++        title: 'Sales.xlsx — Excel',
++        bounds: { x: 0, y: 0, width: 1000, height: 700 }
++      }
++    ]
++
++    const windows = parseMetadataLine(metadataLine(projectWindowMetadata(raw)))
++    expect(Array.isArray(windows)).toBe(true)
++
++    if (!Array.isArray(windows)) {throw new Error('metadata missing')}
++    expect(pickWindowBelow(windows, 7, raw[0].bounds).below?.app).toBe('Microsoft Word')
++    expect(windows[2].title).toBe('Sales.xlsx — Excel')
++    expect(JSON.stringify(windows)).not.toContain('ignored_private_field')
++    expect(windows[1].bounds.x).toBe(-20)
++  })
++
++  it('bounds window count, all fields and serialized UTF8 bytes without reordering', () => {
++    const raw = Array.from({ length: 500 }, (_, id) => ({
++      id,
++      owner: { name: '字'.repeat(500), processId: id },
++      title: '标题'.repeat(1000),
++      bounds: { x: Infinity, y: NaN, width: -20, height: 300 }
++    }))
++
++    const line = metadataLine(projectWindowMetadata(raw))
++    expect(Buffer.byteLength(line)).toBeLessThanOrEqual(WINDOW_METADATA_MAX_BYTES)
++    const rows = parseMetadataLine(line)
++
++    if (!Array.isArray(rows)) {throw new Error('bounded list missing')}
++    expect(rows.length).toBeLessThanOrEqual(128)
++    expect(rows[0].id).toBe(0)
++    expect(rows[0].app.length).toBe(128)
++    expect(rows[0].title.length).toBe(512)
++    expect(rows[0].bounds).toEqual({ x: 0, y: 0, width: 0, height: 300 })
++  })
++
++  it('rejects unknown fields, malformed rows and unbounded helper output', () => {
++    for (const value of [
++      { version: 1, windows: [], token: 'untrusted' },
++      {
++        version: 1,
++        windows: [{ app: 'Word', title: 'x', id: 1, pid: 2, bounds: { x: 0, y: 0, width: 4, height: -1 } }]
++      },
++      { version: 1, windows: [], error: 'ambiguous' },
++      { version: 2, windows: [] }
++    ])
++      {expect(parseMetadataLine(JSON.stringify(value))).toHaveProperty('reason')}
++
++    expect(parseMetadataLine('x'.repeat(WINDOW_METADATA_MAX_BYTES + 1))).toHaveProperty('reason')
++    expect(projectWindowMetadata(undefined)).toHaveProperty('reason')
++    expect(parseMetadataLine(metadataLine([]))).toEqual([])
++  })
++})
+diff --git a/apps/desktop/electron/window-enumeration-protocol.ts b/apps/desktop/electron/window-enumeration-protocol.ts
+new file mode 100644
+index 00000000..4c386d2a
+--- /dev/null
++++ b/apps/desktop/electron/window-enumeration-protocol.ts
+@@ -0,0 +1,114 @@
++import type { EnumeratedWindow, EnumerationFailure } from './window-below'
++
++export const WINDOW_METADATA_MAX_BYTES = 256 * 1024
++export const WINDOW_METADATA_MAX_WINDOWS = 128
++
++interface MetadataPacket {
++  version: 1
++  windows?: EnumeratedWindow[]
++  error?: string
++}
++
++const text = (value: unknown, limit: number) =>
++  typeof value === 'string' ? value.replace(/[\0\r\n]+/g, ' ').slice(0, limit) : ''
++
++const coordinate = (value: unknown) =>
++  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000 ? value : 0
++
++const identifier = (value: unknown) =>
++  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
++
++/** Metadata only; never copy arbitrary native fields or an unbounded title. */
++export function projectWindowMetadata(raw: unknown): EnumeratedWindow[] | EnumerationFailure {
++  if (!Array.isArray(raw)) {return { reason: 'the window enumerator returned no window list' }}
++
++  return raw
++    .slice(0, WINDOW_METADATA_MAX_WINDOWS)
++    .filter(item => item && typeof item === 'object')
++    .map(item => ({
++      app: text(item.owner?.name, 128),
++      title: text(item.title, 512),
++      id: identifier(item.id),
++      pid: identifier(item.owner?.processId),
++      bounds: {
++        x: coordinate(item.bounds?.x),
++        y: coordinate(item.bounds?.y),
++        width: Math.max(0, coordinate(item.bounds?.width)),
++        height: Math.max(0, coordinate(item.bounds?.height))
++      }
++    }))
++}
++
++export function metadataLine(result: EnumeratedWindow[] | EnumerationFailure): string {
++  const packet: MetadataPacket = Array.isArray(result)
++    ? { version: 1, windows: [...result] }
++    : { version: 1, error: text(result.reason, 512) }
++
++  let encoded = JSON.stringify(packet) + '\n'
++
++  // Retain front-to-back order, trimming only the farthest windows if unusually
++  // long non-ASCII titles would exceed the transport budget.
++  while (Buffer.byteLength(encoded) > WINDOW_METADATA_MAX_BYTES && packet.windows?.length) {
++    packet.windows.pop()
++    encoded = JSON.stringify(packet) + '\n'
++  }
++
++  return encoded
++}
++
++export function parseMetadataLine(line: string): EnumeratedWindow[] | EnumerationFailure {
++  const failure = { reason: 'the window metadata helper returned an invalid bounded response' }
++
++  if (Buffer.byteLength(line) > WINDOW_METADATA_MAX_BYTES) {return failure}
++
++  try {
++    const packet = JSON.parse(line) as MetadataPacket
++
++    if (
++      !packet ||
++      packet.version !== 1 ||
++      Object.keys(packet).some(key => !['version', 'windows', 'error'].includes(key))
++    )
++      {return failure}
++
++    if (typeof packet.error === 'string' && !packet.windows) {return { reason: text(packet.error, 512) }}
++
++    if (
++      !Array.isArray(packet.windows) ||
++      packet.windows.length > WINDOW_METADATA_MAX_WINDOWS ||
++      packet.error !== undefined
++    )
++      {return failure}
++
++    for (const item of packet.windows) {
++      if (
++        !item ||
++        typeof item !== 'object' ||
++        Object.keys(item).some(key => !['app', 'title', 'id', 'pid', 'bounds'].includes(key)) ||
++        typeof item.app !== 'string' ||
++        item.app.length > 128 ||
++        typeof item.title !== 'string' ||
++        item.title.length > 512 ||
++        !Number.isSafeInteger(item.id) ||
++        item.id < 0 ||
++        !Number.isSafeInteger(item.pid) ||
++        item.pid < 0 ||
++        !item.bounds ||
++        Object.keys(item.bounds).some(key => !['x', 'y', 'width', 'height'].includes(key)) ||
++        ['x', 'y', 'width', 'height'].some(
++          key =>
++            typeof item.bounds[key] !== 'number' ||
++            !Number.isFinite(item.bounds[key]) ||
++            Math.abs(item.bounds[key]) > 1_000_000
++        ) ||
++        item.bounds.width < 0 ||
++        item.bounds.height < 0
++      )
++        {return failure}
++    }
++
++    return packet.windows
++  } catch {
++    return failure
++  }
++}
+diff --git a/apps/desktop/electron/window-enumeration-worker.ts b/apps/desktop/electron/window-enumeration-worker.ts
+new file mode 100644
+index 00000000..f069b56e
+--- /dev/null
++++ b/apps/desktop/electron/window-enumeration-worker.ts
+@@ -0,0 +1,22 @@
++import { pathToFileURL } from 'node:url'
++
++import { metadataLine, projectWindowMetadata } from './window-enumeration-protocol'
++
++/** Runs in Electron's Node-enabled utility process, independent of RunAsNode
++ * fuses. Import exactly the prepared staged native module from this build. */
++async function main() {
++  const modulePath = process.argv[2]
++
++  if (!modulePath) {return metadataLine({ reason: 'the staged window enumerator was not specified' })}
++
++  try {
++    const provider = await import(pathToFileURL(modulePath).href)
++    const raw = await provider.openWindows()
++
++    return metadataLine(projectWindowMetadata(raw))
++  } catch {
++    return metadataLine({ reason: 'the staged native window enumerator could not be loaded or queried' })
++  }
++}
++
++void main().then(line => process.stdout.write(line, () => process.exit(0)))
+diff --git a/apps/desktop/scripts/bundle-electron-main.mjs b/apps/desktop/scripts/bundle-electron-main.mjs
+index 060947bf..814aa051 100644
+--- a/apps/desktop/scripts/bundle-electron-main.mjs
++++ b/apps/desktop/scripts/bundle-electron-main.mjs
+@@ -27,9 +27,10 @@ function productIdentity(source, stamp) {
+   }).trim()
+ }
+ 
+-/** Every file bundleElectronMain writes: the only outputs that bake the install stamp. */
++/** Native entries emitted from the same prepared source/build identity. */
+ export const electronOutputs = Object.freeze({
+   main: 'electron-main.mjs', preload: 'electron-preload.js', previewGuestPreload: 'preview-guest-preload.js', regionCapturePreload: 'region-capture-preload.js',
++  windowEnumerationWorker: 'window-enumeration-worker.mjs',
+ })
+ 
+ /** Bundle main/preload using only the prepared workspace's compiler. */
+@@ -92,6 +93,12 @@ export async function bundleElectronMain({ source, out, stamp, dev = false }) {
+     format: 'cjs',
+     outfile: join(out, electronOutputs.regionCapturePreload),
+   })
++  await build({
++    ...common,
++    entryPoints: [join(source, 'apps/desktop/electron/window-enumeration-worker.ts')],
++    format: 'esm',
++    outfile: join(out, electronOutputs.windowEnumerationWorker),
++  })
+   return { stampClock: bakedStamp }
+ }
+ 
+diff --git a/apps/desktop/scripts/bundle-electron-main.test.mjs b/apps/desktop/scripts/bundle-electron-main.test.mjs
+index 10865b6a..4fcf322e 100644
+--- a/apps/desktop/scripts/bundle-electron-main.test.mjs
++++ b/apps/desktop/scripts/bundle-electron-main.test.mjs
+@@ -1,12 +1,12 @@
+ import { execFileSync } from 'node:child_process'
+-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
++import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+ import { tmpdir } from 'node:os'
+ import { join, resolve } from 'node:path'
+ import { pathToFileURL } from 'node:url'
+ 
+ import { afterAll, beforeAll, expect, test } from 'vitest'
+ 
+-import { bundleElectronMain } from './bundle-electron-main.mjs'
++import { bundleElectronMain, electronOutputs } from './bundle-electron-main.mjs'
+ 
+ const repo = resolve(import.meta.dirname, '../../..')
+ let root
+@@ -133,3 +133,16 @@ test('the bundled entry reads desktop.electron_flags from the parent of a profil
+     })
+   ).toEqual({ relaunched: ['.', '--ozone-platform=x11'] })
+ })
++
++// The isolated enumerator must be emitted alongside the main entry: packaged
++// utilityProcess cannot load a source-tree-only TypeScript helper.
++test('the prepared bundle emits the standalone metadata utility worker', () => {
++  const worker = join(root, 'dist', electronOutputs.windowEnumerationWorker)
++  expect(existsSync(worker)).toBe(true)
++  const provider = join(root, 'worker-provider.mjs')
++  writeFileSync(provider, `export async function openWindows() { return [{id:1,owner:{name:'Metadata fixture',processId:2},title:'Fixture',bounds:{x:0,y:0,width:3,height:4}}] }`)
++  const result = execFileSync(process.execPath, [worker, provider], { encoding:'utf8', timeout:5000 })
++  expect(JSON.parse(result)).toEqual({version:1,windows:[{id:1,pid:2,app:'Metadata fixture',title:'Fixture',bounds:{x:0,y:0,width:3,height:4}}]})
++  const source = readFileSync(worker, 'utf8')
++  expect(source).not.toMatch(/from ["']electron["']/)
++})
