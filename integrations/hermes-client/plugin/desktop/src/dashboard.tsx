@@ -33,7 +33,7 @@ function quantity(value: number, unit: string) {
   const units: Record<string, string> = { requests: '次', tokens: 'Token', credits: '积分' }
   return `${number} ${units[unit] || unit}`.trim()
 }
-const states: Record<string, string> = { ready: '已读取', stale: '记录已过期', expired: '窗口已结束', partial: '部分已读取' }
+const states: Record<string, string> = { ready: '已读取', stale: '记录已过期', expired: '窗口已结束', partial: '部分已读取', blocked: '暂不可调度' }
 const stateLabel = (state: string) => states[state] || '未获取'
 
 function AccountCard({ account }: { account: QuotaAccount }) {
@@ -44,7 +44,7 @@ function AccountCard({ account }: { account: QuotaAccount }) {
     {account.unknown_reason && <p className="misaka-reason">{account.unknown_reason}</p>}
     {!account.windows.length && <p>尚无可读取的额度窗口。</p>}
     {account.windows.map(window => {
-      const ready = account.state === 'ready' && window.state === 'ready'
+      const ready = ['ready', 'partial'].includes(account.state) && window.state === 'ready'
       const hasRatio = ready && finite(window.used) && finite(window.capacity) && window.capacity > 0
       return <section className="misaka-window" key={window.id} aria-label={window.label}>
         <div className="misaka-window-title"><span>{window.label}</span><strong>{ready && finite(window.remaining) ? `剩余 ${quantity(window.remaining, window.unit)}` : '—'}</strong></div>
@@ -74,9 +74,10 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
   const [observedAt, setObservedAt] = useState(''), [accountLabel, setAccountLabel] = useState('')
   const generation = useRef(0)
   const mounted = useRef(true)
+  const settingsRequest = useRef<AbortController | null>(null)
   const api = localApi(localProfile)
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++ } }, [])
-  useEffect(() => { setSnapshot(null); readCache(); return () => { generation.current++ } }, [localProfile])
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current++; settingsRequest.current?.abort() } }, [])
+  useEffect(() => { setSnapshot(null); readCache(); return () => { generation.current++; settingsRequest.current?.abort() } }, [localProfile])
   useEffect(() => {
     if (!snapshot?.refreshing) return
     const current = generation.current
@@ -97,12 +98,15 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
   async function refresh() { await perform(() => api<DashboardSnapshot>('/quota/refresh', { method: 'POST', body: {} })) }
   async function openAccounts() {
     const current = generation.current; setError('')
+    settingsRequest.current?.abort()
+    const controller = new AbortController(); settingsRequest.current = controller
     try {
-      // Explicit user navigation activates the selected local source before
-      // opening native provider settings, never the ambient remote chat source.
-      await host.ensureAgent('local', localProfile)
-      if (mounted.current && current === generation.current) host.navigate('/settings?tab=providers&pview=accounts')
+      // The host owns both agent activation and the independent settings scope.
+      // Older clients cannot safely infer the latter from the active chat.
+      if (typeof host.openLocalProviderSettings !== 'function') throw new Error('当前客户端无法绑定原生账号设置的本机配置，请升级 MISAKA AGENT 客户端后重试。')
+      await host.openLocalProviderSettings({ connectionId: 'local', profile: localProfile, signal: controller.signal })
     } catch (failure) { if (mounted.current && current === generation.current) setError(String(failure)) }
+    finally { if (settingsRequest.current === controller) settingsRequest.current = null }
   }
   async function importSnapshot() {
     const current = generation.current
@@ -128,7 +132,7 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
       <Button size="sm" variant="secondary" disabled={!profileInput.trim()} onClick={() => {
         try { const target = profileInput.trim(); localApi(target); ctx.storage.set('local-profile', target)
           if (target === localProfile) { readCache(); return }
-          generation.current++; setLocalProfile(target); setSnapshot(null); setError('') }
+          generation.current++; settingsRequest.current?.abort(); setLocalProfile(target); setSnapshot(null); setError('') }
         catch (failure) { setError(String(failure)) }
       }}>连接此本机配置</Button><p>当前数据来自本机 {localProfile}。聊天连接切换不会改变这里的账号范围。</p></div>
     {waiting && <Loader label={snapshot?.refreshing ? '正在读取实际用量，已缓存数据仍可查看' : '正在读取本机额度记录'} />}
