@@ -25,7 +25,7 @@ $providerOverrides = Join-Path $env:RUNNER_TEMP 'misaka-offline-provider-overrid
 $configuration | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 $providerOverrides
 # Preserve the actual preparation's native plugin admission and language state.
 # The harness must not turn the core on itself or erase its real default.
-python -c 'import json,pathlib,sys,yaml; target=pathlib.Path(sys.argv[1]); current=(yaml.safe_load(target.read_text(encoding="utf-8-sig")) or {}) if target.is_file() else {}; current.update(json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8-sig"))); target.write_text(json.dumps(current,ensure_ascii=False),encoding="utf-8")' (Join-Path $ProfileDirectory 'config.yaml') $providerOverrides
+python -c 'import json,pathlib,sys,yaml; target=pathlib.Path(sys.argv[1]); current=(yaml.safe_load(target.read_text(encoding="utf-8-sig")) or {}) if target.is_file() else {}; plugins=current.get("plugins",{}); assert "orchestrator-core" in plugins.get("enabled",[]) and "orchestrator-core" not in plugins.get("disabled",[]), "Native preparation did not enable its default core before optional installation"; current.update(json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8-sig"))); target.write_text(json.dumps(current,ensure_ascii=False),encoding="utf-8")' (Join-Path $ProfileDirectory 'config.yaml') $providerOverrides
 if ($LASTEXITCODE -ne 0) { throw 'Offline provider fixture could not preserve the actual prepared configuration.' }
 Remove-Item $providerOverrides
 'ACCEPTANCE_ONLY_API_KEY=isolated-no-inference' | Set-Content -Encoding ascii (Join-Path $ProfileDirectory '.env')
@@ -56,6 +56,7 @@ $report = [ordered]@{
   skill_archive_sha256 = (Get-FileHash $skillArchive -Algorithm SHA256).Hash.ToLowerInvariant()
   actual_zip_installed = $true; same_native_launcher_and_home = $true
   core_not_manually_enabled_by_harness = $true
+  prepared_core_enabled_before_optional_install = $true
   model_inference = 'not_invoked'; real_provider_credentials = 'not_used'
   labelled_offline_endpoint_for_unsent_draft_only = $true
   commands = @{}
