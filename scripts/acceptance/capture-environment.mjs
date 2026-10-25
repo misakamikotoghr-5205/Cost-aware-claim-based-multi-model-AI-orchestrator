@@ -1,7 +1,9 @@
 /** Diagnostic fixture for the real Electron/Windows screen API; not product UI. */
 import { app, BrowserWindow, desktopCapturer, screen } from 'electron'
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 const option = prefix => process.argv.find(value => value.startsWith(prefix))?.slice(prefix.length)
 const destination = option('--capture-report=')
 const thumbnail = Number(option('--capture-thumbnail='))
@@ -18,6 +20,15 @@ try {
   const fixture = new BrowserWindow({ width: 640, height: 400, title: 'Native capture diagnostic fixture',
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } })
   await fixture.loadURL('data:text/html,<h1>Windows screen API diagnostic</h1><p>This is a test fixture, not the MISAKA client or Office.</p>')
+  await new Promise(resolvePaint => setTimeout(resolvePaint, 500))
+  if (process.platform === 'win32' && thumbnail === 0 && report.gpu_disabled_flag) {
+    const gdi = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File',
+      fileURLToPath(new URL('./windows-gdi.ps1', import.meta.url)),
+      '-ReportPath', join(dirname(destination), 'windows-gdi-report.json'),
+      '-ImagePath', join(dirname(destination), 'windows-gdi-diagnostic-fixture.png')],
+    { stdio: 'ignore', timeout: 20_000, windowsHide: true })
+    report.gdi_probe_process = { status: gdi.status, error_code: gdi.error?.code }
+  }
   const started = Date.now()
   const sources = await Promise.race([
     desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: thumbnail, height: thumbnail }, fetchWindowIcons: false }),
