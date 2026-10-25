@@ -75,9 +75,9 @@ try {
       const file = 'capture-environment-' + variant.thumbnail + (variant.disabled ? '-gpu-disabled' : '-gpu-default') + '.json'
       const diagnostic = spawnSync(executablePath, [join(ownDirectory, 'capture-environment.mjs'), '--no-sandbox',
         ...(variant.disabled ? ['--disable-gpu'] : []), '--capture-thumbnail=' + variant.thumbnail,
-        '--capture-report=' + join(output, file)], { env, cwd: desktopRoot, stdio: 'ignore', timeout: variant.disabled ? 45_000 : 25_000, windowsHide: true })
+        '--capture-report=' + join(output, file)], { env, cwd: desktopRoot, stdio: ['ignore', 'pipe', 'pipe'], timeout: 25_000, windowsHide: true, maxBuffer: 1024 * 1024 })
       const result = existsSync(join(output, file)) ? JSON.parse(readFileSync(join(output, file), 'utf8'))
-        : { result: 'process_failed', status: diagnostic.status, code: diagnostic.error?.code }
+        : { result: 'process_failed', status: diagnostic.status, code: diagnostic.error?.code, error: redact(diagnostic.stderr?.toString() || '') }
       report.screen_api_diagnostics.push({ file, ...result })
       console.log(JSON.stringify({ screen_api_diagnostic: file, result: result.result, elapsed_ms: result.elapsed_ms, error: result.error }))
     }

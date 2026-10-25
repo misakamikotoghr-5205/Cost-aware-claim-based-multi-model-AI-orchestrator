@@ -1,9 +1,7 @@
 /** Diagnostic fixture for the real Electron/Windows screen API; not product UI. */
 import { app, BrowserWindow, desktopCapturer, screen } from 'electron'
-import { spawnSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dirname } from 'node:path'
 const option = prefix => process.argv.find(value => value.startsWith(prefix))?.slice(prefix.length)
 const destination = option('--capture-report=')
 const thumbnail = Number(option('--capture-thumbnail='))
@@ -12,8 +10,9 @@ mkdirSync(dirname(destination), { recursive: true })
 const report = { diagnostic_fixture: true, product_ui: false, platform: process.platform,
   electron: process.versions.electron, thumbnail,
   gpu_disabled_flag: process.argv.includes('--disable-gpu'), started_at: new Date().toISOString() }
-let timer
-try {
+async function main() {
+  let timer
+  try {
   await app.whenReady()
   report.gpu_features = app.getGPUFeatureStatus()
   report.displays = screen.getAllDisplays().map(display => ({ bounds: display.bounds, scaleFactor: display.scaleFactor }))
@@ -21,14 +20,8 @@ try {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } })
   await fixture.loadURL('data:text/html,<h1>Windows screen API diagnostic</h1><p>This is a test fixture, not the MISAKA client or Office.</p>')
   await new Promise(resolvePaint => setTimeout(resolvePaint, 500))
-  if (process.platform === 'win32' && thumbnail === 0 && report.gpu_disabled_flag) {
-    const gdi = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-File',
-      fileURLToPath(new URL('./windows-gdi.ps1', import.meta.url)),
-      '-ReportPath', join(dirname(destination), 'windows-gdi-report.json'),
-      '-ImagePath', join(dirname(destination), 'windows-gdi-diagnostic-fixture.png')],
-    { stdio: 'ignore', timeout: 20_000, windowsHide: true })
-    report.gdi_probe_process = { status: gdi.status, error_code: gdi.error?.code }
-  }
+  report.phase = 'enumerating_real_screens'
+  writeFileSync(destination, JSON.stringify(report, null, 2))
   const started = Date.now()
   const sources = await Promise.race([
     desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: thumbnail, height: thumbnail }, fetchWindowIcons: false }),
@@ -45,4 +38,6 @@ try {
   report.finished_at = new Date().toISOString()
   writeFileSync(destination, JSON.stringify(report, null, 2))
   app.exit(0)
+  }
 }
+void main()

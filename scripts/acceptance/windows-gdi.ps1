@@ -4,6 +4,7 @@ $ErrorActionPreference = 'Stop'
 $report = [ordered]@{ diagnostic_fixture = $true; product_ui = $false; method = 'System.Drawing.CopyFromScreen'; platform = 'Windows' }
 $bitmap = $null
 $graphics = $null
+$fixtureWindow = $null
 $previousContext = [IntPtr]::Zero
 try {
   Add-Type @'
@@ -18,6 +19,22 @@ public static class MisakaGdiProbeDpi {
   if ($previousContext -eq [IntPtr]::Zero) { throw 'Could not establish physical per-monitor DPI coordinates.' }
   Add-Type -AssemblyName System.Drawing
   Add-Type -AssemblyName System.Windows.Forms
+  $fixtureWindow = [Windows.Forms.Form]::new()
+  $fixtureWindow.Text = 'Windows GDI diagnostic fixture (not product UI)'
+  $fixtureWindow.Size = [Drawing.Size]::new(640, 400)
+  $fixtureWindow.StartPosition = 'CenterScreen'
+  $fixtureWindow.BackColor = [Drawing.Color]::White
+  $fixtureWindow.TopMost = $true
+  $label = [Windows.Forms.Label]::new()
+  $label.Text = 'Windows GDI capture diagnostic. This is a real test window, not MISAKA client UI or Office.'
+  $label.Font = [Drawing.Font]::new('Segoe UI', 22)
+  $label.Bounds = [Drawing.Rectangle]::new(32, 32, 560, 250)
+  $fixtureWindow.Controls.Add($label)
+  $fixtureWindow.Show()
+  $fixtureWindow.Activate()
+  [Windows.Forms.Application]::DoEvents()
+  Start-Sleep -Milliseconds 500
+  [Windows.Forms.Application]::DoEvents()
   $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
   if ($bounds.Width -le 0 -or $bounds.Height -le 0 -or [long]$bounds.Width * $bounds.Height -gt 16777216) {
     throw 'Diagnostic screen size is unavailable or exceeds its limit.'
@@ -46,6 +63,7 @@ public static class MisakaGdiProbeDpi {
 } finally {
   if ($null -ne $graphics) { $graphics.Dispose() }
   if ($null -ne $bitmap) { $bitmap.Dispose() }
+  if ($null -ne $fixtureWindow) { $fixtureWindow.Close(); $fixtureWindow.Dispose() }
   if ($previousContext -ne [IntPtr]::Zero) { [void][MisakaGdiProbeDpi]::SetThreadDpiAwarenessContext($previousContext) }
   $report.finished_at = (Get-Date).ToUniversalTime().ToString('o')
   $report | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 $ReportPath
