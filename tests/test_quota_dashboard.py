@@ -48,7 +48,7 @@ def test_import_requires_actual_time_and_never_returns_credential_payload(tmp_pa
     p.write_text(json.dumps({'data':{'total_credits':20,'total_usage':4},'access_token':'never-echo-this'}))
     with pytest.raises(ValueError) as error:dashboard.import_file({'format':'openrouter','path':str(p),'observed_at':1000})
     assert 'never-echo-this' not in str(error.value)
-    assert 'never-echo-this' not in dashboard.path.read_text()
+    assert 'never-echo-this' not in dashboard.path.read_text(encoding='utf-8')
     credentials=tmp_path/'auth.json';credentials.write_text('{}')
     with pytest.raises(ValueError):dashboard.import_file({'format':'codex','path':str(credentials),'observed_at':1000})
 

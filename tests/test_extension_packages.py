@@ -310,14 +310,17 @@ def test_native_patch_upgrade_uses_new_cache_without_resetting_old_source(tmp_pa
     header = b"diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n"
     patch.write_bytes(header + b"+first\n")
     old = prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", patch_dir=patches)
+    old_bytes = (old / "new.txt").read_bytes()
     patch.write_bytes(header + b"+second\n")
     new = prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", patch_dir=patches)
     assert old != new
-    assert (old / "new.txt").read_bytes() == b"first\n"
-    assert (new / "new.txt").read_bytes() == b"second\n"
+    assert (old / "new.txt").read_bytes() == old_bytes
+    assert (old / "new.txt").read_text(encoding="utf-8") == "first\n"
+    assert (new / "new.txt").read_text(encoding="utf-8") == "second\n"
     assert prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", patch_dir=patches) == new
     with pytest.raises(ep.ExtensionError, match="changed"):
         prep.prepare_checkout(spec=spec, cache_dir=tmp_path / "cache", upstream=old, patch_dir=patches)
+    assert (old / "new.txt").read_bytes() == old_bytes
 
 
 def test_inventory_never_follows_nested_payload_symlink(tmp_path):
