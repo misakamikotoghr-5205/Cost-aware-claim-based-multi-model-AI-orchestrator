@@ -9,7 +9,7 @@ $previousContext = [IntPtr]::Zero
 try {
   # Observe this empty CI desktop. Never create a fixture over the actual dialog,
   # and never substitute diagnostic pixels for the product's own native crop.
-  Add-Type @'
+  if (-not ('MisakaDialogDesktop' -as [type])) { Add-Type @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
@@ -51,6 +51,7 @@ public static class MisakaDialogDesktop {
   }
 }
 '@
+  }
   $report.windows = @([MisakaDialogDesktop]::Snapshot([uint32]$ApplicationPid))
   $previousContext = [MisakaDialogDesktop]::SetThreadDpiAwarenessContext([IntPtr](-4))
   if ($previousContext -eq [IntPtr]::Zero) { throw 'Physical DPI context was not available.' }
