@@ -1,8 +1,8 @@
 {
   "upstream_commit": "4dcef215cfe41bd2d02c2d1dad6e257a18101216",
   "requires_previous_patches": "0001–0009",
-  "patch_sha256": "29a1d092d741d685100a6e064667882a74768c0551c378341b7ea64fb75d972e",
-  "patched_tree": "a2b816b5786cb77515b4c37702660104b213da24",
+  "patch_sha256": "a6df41c16d2f93e7160a898972ed22004723ede63f476dd0c042cfbc2c5153e8",
+  "patched_tree": "9429507a71e642204e334be3a6eeb69124bdd9ca",
   "source_checks": {
     "patch_forward_and_reverse": true,
     "english_leaves": 5408,
@@ -16,7 +16,8 @@
     "settings_behavior_and_provider_locale_tests": 10,
     "media_reference_and_extra_controls_regression_tests": 35,
     "tray_behavior_tests": 9,
-    "native_uninstall_unit_tests": 19
+    "additional_native_entrypoints_unit_tests": 114
   },
-  "full_native_build_or_real_GUI_in_this_check": false
+  "full_native_build_or_real_GUI_in_this_check": false,
+  "portal_session_live_fixture": "environment skipped; not counted as passed"
 }

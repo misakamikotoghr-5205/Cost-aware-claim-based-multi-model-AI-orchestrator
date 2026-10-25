@@ -118,6 +118,38 @@ index 9fb9051a..25cb4771 100644
  }
  
  /**
+diff --git a/apps/desktop/electron/gateway-file-download-transport.test.ts b/apps/desktop/electron/gateway-file-download-transport.test.ts
+index 1f3dec96..b74b2cbd 100644
+--- a/apps/desktop/electron/gateway-file-download-transport.test.ts
++++ b/apps/desktop/electron/gateway-file-download-transport.test.ts
+@@ -132,10 +132,10 @@ test.each(authCases)(
+           // #92480: the dialog must carry the download's file type so Windows has
+           // a default extension to append; the resolved name reaches it intact.
+           expect(settings.defaultPath).toBe('server.bin')
+-          expect(settings.title).toBe('Save File')
++          expect(settings.title).toBe('保存文件')
+           expect(settings.filters).toEqual([
+-            { name: 'BIN File', extensions: ['bin'] },
+-            { name: 'All Files', extensions: ['*'] }
++            { name: 'BIN 文件', extensions: ['bin'] },
++            { name: '全部文件', extensions: ['*'] }
+           ])
+           dialogEntered.resolve()
+ 
+@@ -486,10 +486,10 @@ test('the data-url save dialog carries a file type too', async (): Promise<void>
+     {
+       defaultPath: suggested,
+       filters: [
+-        { name: 'BIN File', extensions: ['bin'] },
+-        { name: 'All Files', extensions: ['*'] }
++        { name: 'BIN 文件', extensions: ['bin'] },
++        { name: '全部文件', extensions: ['*'] }
+       ],
+-      title: 'Save File'
++      title: '保存文件'
+     }
+   ])
+   await expect(fs.promises.readFile(destination, 'utf8')).resolves.toBe('hello')
 diff --git a/apps/desktop/electron/gateway-file-download.test.ts b/apps/desktop/electron/gateway-file-download.test.ts
 index cf604144..d0b0ce67 100644
 --- a/apps/desktop/electron/gateway-file-download.test.ts
