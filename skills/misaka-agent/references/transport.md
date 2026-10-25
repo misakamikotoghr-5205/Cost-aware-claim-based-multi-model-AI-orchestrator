@@ -2,7 +2,7 @@
 
 The runtime is the complete Hermes-based MISAKA installation. This skill's
 transport is compatible with the pinned upstream commit
-`4dcef215cfe41bd2d02c2d1dad6e257a18101216` and MISAKA core 0.2.0.
+`4dcef215cfe41bd2d02c2d1dad6e257a18101216` and MISAKA core 0.2.1.
 
 The CLI uses the explicitly selected installation launcher to obtain its real
 Python interpreter with `--print-runtime-command`, then calls the original

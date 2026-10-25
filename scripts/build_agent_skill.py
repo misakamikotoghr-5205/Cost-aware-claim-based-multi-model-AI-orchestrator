@@ -36,5 +36,5 @@ def build(output):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output',type=Path,default=ROOT/'dist/skills/misaka-agent-0.2.0.zip')
+    parser.add_argument('--output',type=Path,default=ROOT/'dist/skills/misaka-agent-0.2.1.zip')
     print(json.dumps(build(parser.parse_args().output),indent=2))

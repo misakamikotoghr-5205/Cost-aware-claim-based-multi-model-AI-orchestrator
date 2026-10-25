@@ -1,5 +1,5 @@
 name: free-models
-version: 0.2.0
+version: 0.2.1
 description: Optional independently installed free-models extension for orchestrator-core.
 author: Orchestrator contributors
 requires_plugins:

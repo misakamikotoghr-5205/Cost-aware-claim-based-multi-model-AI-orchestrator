@@ -4,7 +4,7 @@ description: Connect an agent to the user's explicitly selected MISAKA AGENT des
 license: MIT
 compatibility: Python 3.10+; a locally installed MISAKA AGENT runtime based on the pinned Hermes gateway, with orchestrator-core enabled. Host must permit local subprocess and loopback HTTP access.
 metadata:
-  version: "0.2.0"
+  version: "0.2.1"
 ---
 
 Use the bundled stdlib CLI, `scripts/misaka.py`. This connects to the same native

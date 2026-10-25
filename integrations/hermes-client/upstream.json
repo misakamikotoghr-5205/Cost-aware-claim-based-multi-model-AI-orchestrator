@@ -4,6 +4,6 @@
   "license": "MIT",
   "native_workspace": "apps/desktop",
   "core_id": "orchestrator-core",
-  "core_version": "0.2.0",
+  "core_version": "0.2.1",
   "optional_packages": ["local-judge", "free-models", "smart-pointer"]
 }

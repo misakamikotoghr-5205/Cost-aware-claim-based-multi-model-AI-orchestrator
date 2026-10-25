@@ -100,13 +100,13 @@ for release packaging and its Windows minimum version and platform SDKs.
 
 ## Optional packages are separate ZIPs
 
-The current extension release is **0.2.0**. If upgrading from 0.1.0 or 0.1.1, first stop
+The current extension release is **0.2.1**. If upgrading from 0.1.x or the 0.2.0 preview, first stop
 any node worker/download and disable the installed optional packages in native
 Capabilities. Switch any session pinned to the core delegation backend back to
 the default backend, then restart the local backend to unload it. Remove the
 old optional packages before upgrading core: their exact core-version dependency
-deliberately prevents a mixed installation. Install core 0.2.0, install only the
-optional 0.2.0 packages wanted, then enable them and restart the local backend.
+deliberately prevents a mixed installation. Install core 0.2.1, install only the
+optional 0.2.1 packages wanted, then enable them and restart the local backend.
 The uninstaller preserves plugin data and native provider credentials. A fresh
 installation can install core followed by its desired optional packages directly.
 
@@ -163,10 +163,10 @@ A ZIP has files at its root (no directory records), including `plugin.yaml`,
 {
   "schema_version": 1,
   "id": "local-judge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "requires": {
     "hermes_commit": "4dcef215cfe41bd2d02c2d1dad6e257a18101216",
-    "core_version": "0.2.0"
+    "core_version": "0.2.1"
   },
   "files": {
     "plugin.yaml": "<64 lowercase SHA-256 hex characters>",
@@ -194,7 +194,7 @@ Install, inspect or remove from the selected Hermes home:
 
 ```bash
 python -m src.extension_packages --hermes-home /path/to/home \
-  install dist/extensions/local-judge-0.2.0.zip
+  install dist/extensions/local-judge-0.2.1.zip
 python -m src.extension_packages --hermes-home /path/to/home list
 python -m src.extension_packages --hermes-home /path/to/home uninstall local-judge
 ```

@@ -1,6 +1,6 @@
-# MISAKA AGENT 0.2.0 快速开始
+# MISAKA AGENT 0.2.1 快速开始
 
-0.2.0 交付可复现的原生桌面源码、独立扩展 ZIP 和独立 Agent Skill ZIP。
+0.2.1 交付可复现的原生桌面源码、独立扩展 ZIP 和独立 Agent Skill ZIP。
 它基于完整 Hermes 原生客户端，保留聊天、历史、工具、Skills、MCP、模型登录和多种连接方式。
 本说明不把源码包称为已签名的 Windows 安装器或 Ubuntu deb，也不代表所有平台、账号和 Office 操作均已验收。
 
@@ -104,25 +104,25 @@ $env:HERMES_HOME = $misakaHome
 
 | ZIP | 用途 |
 | --- | --- |
-| `local-judge-0.2.0.zip` | 本机 Ollama 判断；默认只送最多 512 字符的任务摘要和最多 3 个候选，辅助选择，不接管执行授权。 |
-| `free-models-0.2.0.zip` | 显式刷新免费模型目录与本机模型；发现零价格不等于账号有可用额度。 |
-| `smart-pointer-0.2.0.zip` | 框选区域、关键词、多候选与草稿确认；可独立使用，不要求另装前两个包。 |
+| `local-judge-0.2.1.zip` | 本机 Ollama 判断；默认只送最多 512 字符的任务摘要和最多 3 个候选，辅助选择，不接管执行授权。 |
+| `free-models-0.2.1.zip` | 显式刷新免费模型目录与本机模型；发现零价格不等于账号有可用额度。 |
+| `smart-pointer-0.2.1.zip` | 框选区域、关键词、多候选与草稿确认；可独立使用，不要求另装前两个包。 |
 
 从交付合集取出需要的 ZIP。也可在主仓库生成各自的包；此命令只打包，不自动安装或开启：
 
 ```bash
 python scripts/build_extensions.py --upstream "$native_root" --ids all --output dist/extensions
-python -m src.extension_packages --hermes-home "$misaka_home" install dist/extensions/local-judge-0.2.0.zip
-python -m src.extension_packages --hermes-home "$misaka_home" install dist/extensions/free-models-0.2.0.zip
-python -m src.extension_packages --hermes-home "$misaka_home" install dist/extensions/smart-pointer-0.2.0.zip
+python -m src.extension_packages --hermes-home "$misaka_home" install dist/extensions/local-judge-0.2.1.zip
+python -m src.extension_packages --hermes-home "$misaka_home" install dist/extensions/free-models-0.2.1.zip
+python -m src.extension_packages --hermes-home "$misaka_home" install dist/extensions/smart-pointer-0.2.1.zip
 python -m src.extension_packages --hermes-home "$misaka_home" list
 ```
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\build_extensions.py --upstream $nativeRoot --ids all --output dist\extensions
-.\.venv\Scripts\python.exe -m src.extension_packages --hermes-home $misakaHome install dist\extensions\local-judge-0.2.0.zip
-.\.venv\Scripts\python.exe -m src.extension_packages --hermes-home $misakaHome install dist\extensions\free-models-0.2.0.zip
-.\.venv\Scripts\python.exe -m src.extension_packages --hermes-home $misakaHome install dist\extensions\smart-pointer-0.2.0.zip
+.\.venv\Scripts\python.exe -m src.extension_packages --hermes-home $misakaHome install dist\extensions\local-judge-0.2.1.zip
+.\.venv\Scripts\python.exe -m src.extension_packages --hermes-home $misakaHome install dist\extensions\free-models-0.2.1.zip
+.\.venv\Scripts\python.exe -m src.extension_packages --hermes-home $misakaHome install dist\extensions\smart-pointer-0.2.1.zip
 .\.venv\Scripts\python.exe -m src.extension_packages --hermes-home $misakaHome list
 ```
 
@@ -132,7 +132,7 @@ python -m src.extension_packages --hermes-home "$misaka_home" list
 
 判断模型设置中可检测本机 Ollama、测试连接，并由用户点击安装所选权重；没有自动下载或付费兜底。
 不安装判断扩展仍可使用确定性评分，不安装免费发现扩展仍可在原生聊天手工配置模型。
-升级旧版本前先停止相关工作、禁用扩展、重启后台卸载旧模块；旧可选包需先移除，再安装同为 0.2.0 的 core 与所需可选包，详见[扩展安装说明](native-client.md#optional-packages-are-separate-zips)。
+升级旧版本前先停止相关工作、禁用扩展、重启后台卸载旧模块；旧可选包需先移除，再安装同为 0.2.1 的 core 与所需可选包，详见[扩展安装说明](native-client.md#optional-packages-are-separate-zips)。
 
 ## 5. Dashboard 与智能指针
 
@@ -176,13 +176,13 @@ New-Item -ItemType Directory -Force -Path (Join-Path $HOME '.misaka-fleet') | Ou
 
 ## 7. 将独立 Skill 接入 Claude Code、Codex 或 Hermes
 
-独立包是 `misaka-agent-0.2.0.zip`，不是上述三个原生扩展之一。也可在主仓库运行：
+独立包是 `misaka-agent-0.2.1.zip`，不是上述三个原生扩展之一。也可在主仓库运行：
 
 ```bash
 python scripts/build_agent_skill.py
 ```
 
-输出 `dist/skills/misaka-agent-0.2.0.zip`，ZIP 顶层已含 `misaka-agent/`。将其解压到宿主配置的技能目录，保留 `SKILL.md`、`scripts/`、`references/` 等文件在一起：
+输出 `dist/skills/misaka-agent-0.2.1.zip`，ZIP 顶层已含 `misaka-agent/`。将其解压到宿主配置的技能目录，保留 `SKILL.md`、`scripts/`、`references/` 等文件在一起：
 
 | 宿主 | 常用目录 |
 | --- | --- |
@@ -195,7 +195,7 @@ python scripts/build_agent_skill.py
 ```bash
 skills_dir="$HOME/.agents/skills"
 mkdir -p "$skills_dir"
-unzip dist/skills/misaka-agent-0.2.0.zip -d "$skills_dir"
+unzip dist/skills/misaka-agent-0.2.1.zip -d "$skills_dir"
 skill_cli="$skills_dir/misaka-agent/scripts/misaka.py"
 python3 "$skill_cli" --connection local --launcher "$launcher" --root "$native_root" --home "$misaka_home" setup
 python3 "$skill_cli" --connection local --profile default status
@@ -206,7 +206,7 @@ python3 "$skill_cli" --connection local --profile default extensions
 ```powershell
 $skillsDir = Join-Path $HOME '.agents\skills'
 New-Item -ItemType Directory -Path $skillsDir -Force | Out-Null
-Expand-Archive -LiteralPath 'dist\skills\misaka-agent-0.2.0.zip' -DestinationPath $skillsDir
+Expand-Archive -LiteralPath 'dist\skills\misaka-agent-0.2.1.zip' -DestinationPath $skillsDir
 $skillCli = Join-Path $skillsDir 'misaka-agent\scripts\misaka.py'
 .\.venv\Scripts\python.exe $skillCli --connection local --launcher $launcher --root $nativeRoot --home $misakaHome setup
 .\.venv\Scripts\python.exe $skillCli --connection local --profile default status

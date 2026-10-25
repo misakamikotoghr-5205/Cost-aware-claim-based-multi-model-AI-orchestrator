@@ -2,7 +2,7 @@
   "name": "local-judge",
   "label": "Local judge",
   "description": "Native desktop REST backend",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "tab": {
     "hidden": true
   },
