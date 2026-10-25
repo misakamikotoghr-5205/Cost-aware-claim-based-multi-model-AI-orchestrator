@@ -1,0 +1,57 @@
+name: Native Windows desktop acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch to accept
+        required: false
+        default: main
+  pull_request:
+    paths:
+      - '.github/workflows/desktop-acceptance.yml'
+      - 'scripts/acceptance/**'
+      - 'integrations/hermes-client/**'
+permissions:
+  contents: read
+jobs:
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONUTF8: '1'
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Prepare actual pinned native runtime and application
+        run: |
+          python -m pip install -r requirements.txt
+          python scripts/prepare_native_client.py --cache-dir "$env:RUNNER_TEMP/native-source" --hermes-home "$env:RUNNER_TEMP/native-profile" --build
+      - name: Inspect actual Office availability
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force acceptance-results | Out-Null
+          & scripts/acceptance/windows-office.ps1 -OutputDirectory (Join-Path $PWD 'acceptance-results')
+      - name: Actual Electron launch, native capture and screenshots
+        run: |
+          $spec = Get-Content integrations/hermes-client/upstream.json | ConvertFrom-Json
+          $source = Join-Path "$env:RUNNER_TEMP/native-source" "hermes-$($spec.commit)"
+          node scripts/acceptance/native-desktop.mjs --upstream "$source" --hermes-home "$env:RUNNER_TEMP/native-profile" --output acceptance-results
+      - name: Upload only screenshots and redacted acceptance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-acceptance-${{ github.run_id }}
+          path: acceptance-results/
+          retention-days: 14
+          if-no-files-found: error
