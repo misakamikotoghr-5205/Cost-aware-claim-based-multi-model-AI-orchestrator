@@ -16,5 +16,5 @@ export default {
     '@testing-library/react': resolve('@testing-library/react')
   } },
   test: { environment: 'jsdom', globals: true, env: { NODE_ENV: 'development' },
-    include: [path.resolve(ownDirectory, '../../../extensions/**/desktop/src/*.test.tsx')] }
+    include: [path.resolve(ownDirectory, '*.test.tsx'), path.resolve(ownDirectory, '../../../extensions/**/desktop/src/*.test.tsx')] }
 }

@@ -1,6 +1,7 @@
 import { Button, ConfirmDialog, ErrorState, Input, Loader, Switch, Textarea, host, ROUTES_AREA, SIDEBAR_NAV_AREA,
   type HermesPlugin, type PluginContext } from '@hermes/plugin-sdk'
 import { localApi } from './local-api'
+import { DashboardPage } from './dashboard'
 import { useEffect, useRef, useState } from 'react'
 
 interface NodeInfo { owner_id: string; node_id: string; label: string; online: boolean; last_seen_at: number;
@@ -143,6 +144,8 @@ export function ClientPage({ ctx }: { ctx: PluginContext }) {
 
 export default { id: 'orchestrator-core', name: '云端本地协同', description: '多节点配对、定向任务和独立扩展安装。', defaultEnabled: true,
   register(ctx) {
+    ctx.register({ id: 'dashboard-page', area: ROUTES_AREA, data: { path: '/dashboard' }, render: () => <DashboardPage ctx={ctx} /> })
+    ctx.register({ id: 'dashboard-nav', area: SIDEBAR_NAV_AREA, order: 60, data: { codicon: 'dashboard', label: 'Dashboard', path: '/dashboard' } })
     ctx.register({ id: 'page', area: ROUTES_AREA, data: { path: '/orchestrator' }, render: () => <ClientPage ctx={ctx} /> })
     ctx.register({ id: 'nav', area: SIDEBAR_NAV_AREA, order: 65, data: { codicon: 'remote', label: '云端本地协同', path: '/orchestrator' } })
     ctx.registerSettingsPage({ id: 'client', title: '云端本地协同', icon: 'remote', render: () => <ClientPage ctx={ctx} /> })

@@ -20,7 +20,7 @@ export function localApi(profile = 'default') {
       const endpoint = path.split(/[?#]/, 1)[0]
       // Only static entry routes diagnose an unloaded plugin. Missing task/session
       // IDs and download jobs must keep their original resource-specific errors.
-      if (notFound && ['/settings', '/extensions'].includes(endpoint)) {
+      if (notFound && ['/settings', '/extensions', '/quota/dashboard'].includes(endpoint)) {
         throw new Error('本机扩展接口尚未加载。请在原生插件页启用 Agent，重启对应本机代理，再重新连接。请等待当前任务结束后重启。', { cause: failure })
       }
       throw failure
