@@ -73,9 +73,21 @@ def _matches_patch_tree(checkout, expected):
     return True
 
 
+def cache_checkout(spec, cache_dir, patch_dir=None):
+    """A downstream patch upgrade gets its own source, preserving old checkouts."""
+    digest = hashlib.sha256(spec["commit"].encode())
+    patches = sorted(Path(patch_dir).glob("*.patch")) if patch_dir and Path(patch_dir).is_dir() else []
+    for patch in patches:
+        if patch.is_symlink():
+            raise ExtensionError("native patches must be regular files")
+        digest.update(patch.name.encode())
+        digest.update(hashlib.sha256(patch.read_bytes()).digest())
+    return Path(cache_dir).expanduser().resolve() / ("misaka-" + spec["commit"][:12] + "-" + digest.hexdigest()[:12])
+
+
 def prepare_checkout(*, spec, cache_dir, upstream=None, patch_dir=None):
     commit = spec["commit"]
-    checkout = Path(upstream).expanduser().resolve() if upstream else Path(cache_dir).expanduser().resolve() / ("hermes-" + commit)
+    checkout = Path(upstream).expanduser().resolve() if upstream else cache_checkout(spec, cache_dir, patch_dir)
     if not checkout.exists():
         checkout.parent.mkdir(parents=True, exist_ok=True)
         run(["git", "clone", "--filter=blob:none", "--no-checkout", "--no-tags", "--depth", "1",
