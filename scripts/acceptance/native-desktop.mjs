@@ -54,6 +54,12 @@ try {
     const text = document.body.textContent || ''
     return /provider|API key|Sign in|ready|Ready/.test(text) && !/Starting Hermes/.test(text)
   }, null, { timeout: 180_000 })
+  await page.evaluate(async () => {
+    const status = await window.hermesDesktop.api({ path: '/api/status', method: 'GET',
+      connectionId: 'local', profile: 'default', priority: 'foreground' })
+    if (!status || typeof status !== 'object') throw new Error('Real authenticated native status API did not respond')
+  })
+  report.checks.push('Real authenticated native status API responded through the actual preload transport')
   await page.screenshot({ path: join(output, '01-windows-native-first-run.png') })
   report.screenshots.push('01-windows-native-first-run.png')
   report.checks.push('Real native Electron renderer booted with isolated no-account profile')
