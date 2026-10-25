@@ -6,11 +6,11 @@ import re
 TOOL = "orchestrator_fleet"
 PRIVATE_FIELDS = {"token", "ticket", "lease_token", "access_token", "refresh_token", "api_key", "apikey",
                   "authorization", "cookie", "cookies", "password", "credentials", "headers"}
-SCHEMA = {"name": TOOL, "description": "List/select paired nodes; submit constrained tasks and inspect/cancel receipts. No remote shell command channel.",
+SCHEMA = {"name": TOOL, "description": "查看或选择已配对节点，提交有界任务、查看状态或取消任务；不提供远程终端命令通道。",
           "parameters": {"type": "object", "additionalProperties": False,
             "properties": {
               "action": {"type": "string", "enum": ["list", "select", "submit", "status", "cancel"]},
-              "task_id": {"type": "string", "description": "Stable request/task ID. Reuse the same ID after timeout; never duplicate uncertain work."},
+              "task_id": {"type": "string", "description": "稳定的请求或任务标识；超时后沿用同一标识核对，不能重复提交结果未确认的工作。"},
               "target": {"type": "string"}, "task": {"type": "string"},
               "workspace_alias": {"type": "string"}, "relative_dir": {"type": "string", "default": "."},
               "tools": {"type": "array", "items": {"type": "string"}},
@@ -127,8 +127,9 @@ def perform(backend, args):
 def register(ctx, backend):
     def approval(tool_name, args, **kwargs):
         if tool_name == TOOL and args.get("action") in {"submit", "cancel"}:
-            return {"action": "approve", "message": "Authorize paired-node " + args["action"] +
-                    " for task " + str(args.get("task_id", "")) + " on " + str(args.get("target", "selected node")),
+            action = "提交" if args["action"] == "submit" else "取消"
+            return {"action": "approve", "message": "请确认在节点 " + str(args.get("target", "所选节点")) +
+                    " 上" + action + "任务 " + str(args.get("task_id", "")),
                     "rule_key": "orchestrator-fleet-" + args["action"] + ":" + str(args.get("target", ""))}
         return None
 

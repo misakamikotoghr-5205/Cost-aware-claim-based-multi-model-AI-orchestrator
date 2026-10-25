@@ -8,12 +8,56 @@ from pathlib import Path
 import stat
 import sys
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src import extension_packages as ep
 from scripts import prepare_native_client as prep
+
+
+def test_native_client_bootstrap_enables_only_its_core_through_official_launcher(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    assert prep.initialize_profile(profile)
+    original = (profile / "config.yaml").read_bytes()
+    calls = []
+    monkeypatch.setattr(prep.subprocess, "run", lambda command, **options: calls.append((command, options)) or SimpleNamespace(returncode=0))
+    launcher = tmp_path / "native" / "hermes.exe"
+    result = prep.enable_client_core(tmp_path, profile, {"launcher": str(launcher)})
+    assert result == {"enabled": True, "changed": True}
+    assert len(calls) == 1
+    assert calls[0][0] == [str(launcher.resolve()), "--profile", "default", "plugins", "enable", "orchestrator-core"]
+    assert calls[0][1]["env"]["HERMES_HOME"] == str(profile.resolve())
+    assert calls[0][1]["env"]["HERMES_INSTALL_ROOT"] == str(tmp_path.resolve())
+    assert calls[0][1]["check"] is True and calls[0][1]["shell"] is False
+    assert (profile / "config.yaml").read_bytes() == original
+
+
+@pytest.mark.parametrize("core_name", ["orchestrator-core", "user/orchestrator-core"])
+def test_native_client_bootstrap_keeps_explicit_core_disable_and_optional_choices(tmp_path, monkeypatch, core_name):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    state = {"plugins": {"enabled": ["smart-pointer"], "disabled": [core_name, "local-judge"]}, "display": {"language": "zh"}}
+    path = profile / "config.yaml"
+    path.write_text(json.dumps(state), encoding="utf8")
+    original = path.read_bytes()
+    monkeypatch.setattr(prep.subprocess, "run", lambda *args, **kwargs: pytest.fail("Explicit disable must not be overwritten"))
+    assert prep.enable_client_core(tmp_path, profile, {"launcher": str(tmp_path / "hermes.exe")}) == {
+        "enabled": False, "changed": False, "reason": "explicitly-disabled"}
+    assert path.read_bytes() == original
+
+
+def test_native_client_bootstrap_does_not_execute_for_enabled_or_invalid_preferences(tmp_path, monkeypatch):
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    path = profile / "config.yaml"
+    monkeypatch.setattr(prep.subprocess, "run", lambda *args, **kwargs: pytest.fail("No native activation should run"))
+    path.write_text(json.dumps({"plugins": {"enabled": ["orchestrator-core"]}}), encoding="utf8")
+    assert prep.enable_client_core(tmp_path, profile, {"launcher": str(tmp_path / "hermes.exe")}) == {"enabled": True, "changed": False}
+    path.write_text('plugins: []\n', encoding="utf8")
+    with pytest.raises(ep.ExtensionError):
+        prep.enable_client_core(tmp_path, profile, {"launcher": str(tmp_path / "hermes.exe")})
 
 
 def source(tmp_path, package_id=ep.CORE_ID, version="0.1.0", text="value = 'initial'\n"):

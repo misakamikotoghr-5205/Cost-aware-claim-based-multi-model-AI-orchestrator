@@ -206,6 +206,47 @@ def build_native(checkout, *, skip_deps=False):
     run([npm, "--workspace", "apps/desktop", "run", "build"], cwd=checkout, timeout=1200)
 
 
+def enable_client_core(checkout, hermes_home, runtime):
+    """Admit this client's core through native CLI; retain explicit user denials."""
+    import yaml
+    try:
+        config = yaml.safe_load((Path(hermes_home) / "config.yaml").read_text(encoding="utf-8-sig")) or {}
+        plugins = config.get("plugins")
+        if plugins is None:
+            plugins = {}
+        if not isinstance(plugins, dict):
+            raise ValueError("invalid plugin preferences")
+        enabled, disabled = plugins.get("enabled", []), plugins.get("disabled", [])
+        enabled = [] if enabled is None else enabled
+        disabled = [] if disabled is None else disabled
+        if not all(isinstance(values, list) and all(isinstance(item, str) for item in values)
+                   for values in (enabled, disabled)):
+            raise ValueError("invalid plugin preferences")
+    except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
+        raise ExtensionError("无法读取本机插件启用偏好，请先修复 config.yaml 后重试。") from None
+
+    def matches(name):
+        return name == "orchestrator-core" or name.endswith(("/orchestrator-core", ":orchestrator-core"))
+
+    if any(matches(name) for name in disabled):
+        return {"enabled": False, "changed": False, "reason": "explicitly-disabled"}
+    if any(matches(name) for name in enabled):
+        return {"enabled": True, "changed": False}
+    launcher = str(Path(runtime["launcher"]).resolve())
+    command = [launcher, "--profile", "default", "plugins", "enable", "orchestrator-core"]
+    via_shell = os.name == "nt" and Path(launcher).suffix.lower() in {".cmd", ".bat"}
+    if via_shell:
+        if any(character in launcher for character in '"%&|<>^\r\n'):
+            raise ExtensionError("Windows 原生启动器路径包含不支持的命令字符。")
+        command = subprocess.list2cmdline(command)
+    environment = runtime_environment(hermes_home)
+    environment["HERMES_INSTALL_ROOT"] = str(Path(checkout).resolve())
+    subprocess.run(command, cwd=checkout, env=environment, shell=via_shell,
+                   check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                   encoding="utf-8", errors="replace", timeout=120)
+    return {"enabled": True, "changed": True}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/misaka-agent")
@@ -234,10 +275,13 @@ def main(argv=None):
         print("MISAKA: packaging and installing core; optional packages remain separate", file=sys.stderr, flush=True)
         core = build_one(spec["core_id"], output_dir=args.packages_dir, upstream=checkout)
         installed = ExtensionManager(args.hermes_home, hermes_commit=spec["commit"]).install(core["archive"], replace=True)
+        print("MISAKA: enabling the client core while preserving explicit disable choices", file=sys.stderr, flush=True)
+        activation = enable_client_core(checkout, args.hermes_home, runtime)
         print(json.dumps({"checkout": str(checkout), "core": installed,
+                          "core_activation": activation,
                           "new_profile_defaults_initialized": initialized,
                           "optional_packages_installed": [], "native_built": args.build, "native_runtime": runtime,
-                          "next": "Launch native Capabilities > Plugins to enable orchestrator-core; install optional ZIPs individually."}, indent=2), flush=True)
+                          "next": "启动后可从侧栏打开额度总览；可选扩展按需安装。明确关闭核心的设置会保留。"}, indent=2), flush=True)
         if args.launch:
             npm = shutil.which("npm")
             if npm is None:
