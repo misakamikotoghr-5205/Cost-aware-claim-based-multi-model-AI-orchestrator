@@ -358,6 +358,16 @@ def test_runtime_environment_isolates_home_and_store_and_preserves_network(tmp_p
     assert env['HTTPS_PROXY'] == 'http://test-proxy.invalid:8080'
 
 
+def test_new_profile_waits_for_provider_choice_and_preserves_existing_config(tmp_path):
+    profile = tmp_path / "misaka"
+    assert prep.initialize_profile(profile) is True
+    assert json.loads((profile / "config.yaml").read_text()) == {"nous": {"guest": False}, "onboarding": {"run": False}}
+    existing = b"nous:\n  guest: true\nmodel:\n  provider: custom\n"
+    (profile / "config.yaml").write_bytes(existing)
+    assert prep.initialize_profile(profile) is False
+    assert (profile / "config.yaml").read_bytes() == existing
+
+
 def test_runtime_bootstrap_is_default_and_skip_still_probes_actual_resolver(tmp_path, monkeypatch):
     monkeypatch.setattr(prep.shutil, 'which', lambda name: '/tools/' + name)
     calls = []

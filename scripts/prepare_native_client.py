@@ -140,6 +140,27 @@ def runtime_environment(hermes_home):
     return env
 
 
+def initialize_profile(hermes_home):
+    """Fresh MISAKA profiles wait for the user's provider choice before inference."""
+    directory = Path(hermes_home).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "config.yaml"
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    payload = json.dumps({"nous": {"guest": False}, "onboarding": {"run": False}}, indent=2).encode() + b"\n"
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return True
+
+
 def runtime_setup_command(checkout, *, windows=None):
     windows = os.name == "nt" if windows is None else windows
     if windows:
@@ -187,7 +208,7 @@ def build_native(checkout, *, skip_deps=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/orchestrator-native")
+    parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache/misaka-agent")
     parser.add_argument("--upstream", type=Path, help="reuse an existing clean checkout of the exact pin")
     parser.add_argument("--hermes-home", type=Path, required=True, help="explicit native profile home; credentials are never copied")
     parser.add_argument("--packages-dir", type=Path, default=ROOT / "dist/extensions")
@@ -202,12 +223,14 @@ def main(argv=None):
                                     patch_dir=ROOT / "integrations/hermes-client/patches")
         # SDK compilation and the real resolver probe both consume locked JS dependencies.
         install_js_dependencies(checkout, skip_deps=args.skip_deps)
+        initialized = initialize_profile(args.hermes_home)
         runtime = prepare_runtime(checkout, args.hermes_home, skip_runtime=args.skip_runtime)
         if args.build:
             build_native(checkout, skip_deps=True)
         core = build_one(spec["core_id"], output_dir=args.packages_dir, upstream=checkout)
         installed = ExtensionManager(args.hermes_home, hermes_commit=spec["commit"]).install(core["archive"], replace=True)
         print(json.dumps({"checkout": str(checkout), "core": installed,
+                          "new_profile_defaults_initialized": initialized,
                           "optional_packages_installed": [], "native_built": args.build, "native_runtime": runtime,
                           "next": "Launch native Capabilities > Plugins to enable orchestrator-core; install optional ZIPs individually."}, indent=2), flush=True)
         if args.launch:
