@@ -156,6 +156,42 @@ def test_core_rest_uses_native_authenticated_router_and_installer(installed, mon
     assert called[0][1]["hermes_home"] == installed.home.resolve()
 
 
+@pytest.mark.parametrize("change", ["url", "token_env", "pool", "same-config-aging"])
+def test_quota_dashboard_get_fences_changed_cloud_cache_without_requests(installed, monkeypatch, change):
+    fastapi = pytest.importorskip("fastapi")
+    testclient = pytest.importorskip("fastapi.testclient")
+    backend = installed.backend
+    config = backend.defaults()
+    config["server"]["url"] = "https://cloud.example"
+    config["quota_states"] = {"declared": {"account":"subscription", "model":"*"}}
+    backend.write_state(backend.PLUGIN_ID, config)
+    module = backend.load_file(installed.core / "quota_cloud.py", "quota_cloud")
+    at = time.time()-400 if change == "same-config-aging" else time.time()
+    cached = {"configured":True, "configuration_id":module.config_binding(backend), "state":"ready", "source":"fleet-ledger", "accounts":[{
+        "id":"subscription", "state":"ready", "observed_at":at, "windows":[{
+            "id":"*", "state":"ready", "observed_at":at, "expires_at":at+300, "reset_at":None,
+            "remaining":80,"available":75,"held":5,"unit":"requests"}]}]}
+    dashboard = backend._quota_dashboard()
+    dashboard._write({"cloud":cached, "accounts":[], "imports":[]})
+    before = dashboard.path.read_bytes()
+    if change == "pool":config["quota_states"]["declared"]["model"]="different"
+    elif change in {"url","token_env"}:
+        config["server"][change]="https://different.example" if change == "url" else "OTHER_SELECTOR"
+    backend.write_state(backend.PLUGIN_ID,config)
+    monkeypatch.setattr(backend,"_fleet",lambda:pytest.fail("GET dashboard must not resolve credentials or query transport"))
+    api = load(installed.core / "dashboard" / "plugin_api.py", "native_api")
+    app = fastapi.FastAPI(); app.include_router(api.router,prefix="/api/plugins/orchestrator-core")
+    response = testclient.TestClient(app).get("/api/plugins/orchestrator-core/quota/dashboard")
+    assert response.status_code == 200
+    value = response.json()["cloud"]
+    assert value["state"] == "unknown"
+    if change == "same-config-aging":
+        assert value["accounts"][0]["windows"][0]["state"] == "stale"
+        assert value["accounts"][0]["observed_at"] == at
+    else:assert value["accounts"] == []
+    assert dashboard.path.read_bytes() == before
+
+
 @pytest.fixture
 def ollama():
     state = {"choice": "second", "fail": False, "calls": [], "remote": False}

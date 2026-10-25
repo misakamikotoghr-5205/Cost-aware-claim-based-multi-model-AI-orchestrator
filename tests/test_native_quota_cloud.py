@@ -150,6 +150,58 @@ def test_cached_partial_warning_survives_when_omitted_pools_cannot_be_seen():
     assert cloud.age_cloud_quota(cached,150)["state"] == "partial"
 
 
+def test_configuration_binding_uses_only_connection_selectors_and_pool_identities():
+    config = settings(a={"account":"subscription", "model":"*", "remaining":123})
+    instance = core(config)
+    instance._fleet = lambda: pytest.fail("fingerprinting cannot resolve a credential")
+    initial = cloud.config_binding(instance)
+    config["quota_states"]["a"]["remaining"] = 999999
+    config["quota_states"]["duplicate"] = {"account":"subscription", "model":"*"}
+    assert cloud.config_binding(instance) == initial
+    for field, replacement in [("url","https://different.example"),("token_env","OTHER_TRANSPORT_SELECTOR")]:
+        changed = deepcopy(config)
+        changed["server"][field] = replacement
+        assert cloud.config_binding(core(changed)) != initial
+    changed = deepcopy(config)
+    changed["quota_states"]["a"]["model"] = "different-pool"
+    assert cloud.config_binding(core(changed)) != initial
+
+
+@pytest.mark.parametrize("change", ["url", "token_env", "pool"])
+def test_cache_configuration_change_is_unknown_without_network_or_mutation(change):
+    config = settings(a={"account":"subscription", "model":"*"})
+    instance = core(config,SimpleNamespace(snapshot=lambda *args:snapshot()))
+    cached = cloud.read_cloud_quota(instance)
+    original = deepcopy(cached)
+    if change == "pool":config["quota_states"]["a"]["model"]="another"
+    else:config["server"][change] = "https://different.example" if change == "url" else "OTHER_TOKEN_SELECTOR"
+    instance._fleet = lambda:pytest.fail("cache view cannot resolve credentials or use network")
+    value = cloud.view_cloud_quota(instance,cached,time.time())
+    assert value["state"] == "unknown" and value["accounts"] == []
+    assert value["configuration_id"] != cached["configuration_id"]
+    assert cached == original
+
+
+@pytest.mark.parametrize("during",["fleet-creation","snapshot"])
+def test_concurrent_configuration_change_rejects_refresh_observations(during):
+    config = settings(a={"account":"subscription", "model":"*"})
+    calls = []
+    def read(*args):
+        calls.append(args)
+        config["server"]["url"]="https://different.example"
+        return snapshot()
+    def client():
+        if during == "fleet-creation":config["server"]["url"]="https://different.example"
+        return SimpleNamespace(snapshot=read)
+    instance = core(config)
+    instance._fleet=client
+    initial = cloud.config_binding(instance)
+    value = cloud.read_cloud_quota(instance)
+    assert value["state"] == "unknown" and value["accounts"] == []
+    assert value["configuration_id"] == initial
+    assert len(calls) == (0 if during == "fleet-creation" else 1)
+
+
 def test_real_http_dashboard_reads_ledger_and_does_not_reserve_or_claim(tmp_path):
     token = "temporary-cloud-dashboard-owner-test-token"
     queue = CloudQueue(tmp_path / "queue.sqlite")

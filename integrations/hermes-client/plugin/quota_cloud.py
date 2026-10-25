@@ -12,6 +12,8 @@ import re
 import time
 from copy import deepcopy
 from decimal import Decimal
+import hashlib
+import json
 
 SOURCE = "fleet-ledger"
 MAX_POOLS = 32
@@ -86,6 +88,48 @@ def _aggregate(windows):
     return "ready" if ready == len(windows) and ready else "partial" if ready else "unknown"
 
 
+def _declared_identities(settings):
+    identities, invalid = set(), False
+    declarations = settings.get("quota_states", {})
+    if not isinstance(declarations, dict):
+        declarations = {}
+        invalid = True
+    for value in declarations.values():
+        if not isinstance(value, dict) or not _identity(value.get("account"), value.get("model")):
+            invalid = True
+            continue
+        identities.add((value["account"], value["model"]))
+    return sorted(identities), invalid
+
+
+def _config_binding(settings):
+    server = settings.get("server", {})
+    value = {"url": server.get("url", "").rstrip("/"),
+             "token_env": server.get("token_env", "ORCHESTRATOR_TOKEN"),
+             "pools": _declared_identities(settings)[0]}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def config_binding(core):
+    """Fingerprint public connection selectors and pool IDs, never secret values."""
+    return _config_binding(core.settings())
+
+
+def view_cloud_quota(core, value, now):
+    """Read the current profile configuration and fence an unrelated cache.
+
+    This is a pure configuration/cache read. The original cache and observation
+    timestamps remain untouched, and no transport credential is resolved.
+    """
+    settings = core.settings()
+    binding = _config_binding(settings)
+    if value.get("configuration_id") != binding:
+        return {"configured": bool(settings.get("server", {}).get("url")),
+                "configuration_id": binding, "source": SOURCE, "state": "unknown", "accounts": [],
+                "unknown_reason": "Cloud quota configuration changed or has not been refreshed; the previous connection's observations are not displayed."}
+    return age_cloud_quota(value, now)
+
+
 def age_cloud_quota(value, now):
     """Age a cached cloud projection without I/O or advancing observation times.
 
@@ -143,26 +187,17 @@ def read_cloud_quota(core):
     bundled examples, native provider authentication, or local model metadata.
     """
     settings = core.settings()
+    binding = _config_binding(settings)
     configured = bool(settings.get("server", {}).get("url"))
     result = {"configured": configured, "state": "unknown", "source": SOURCE,
-              "accounts": [], "unknown_reason": None}
+              "configuration_id": binding, "accounts": [], "unknown_reason": None}
     if not configured:
         result["unknown_reason"] = "No cloud quota server is configured."
         return result
-    identities, invalid = set(), False
-    declarations = settings.get("quota_states", {})
-    if not isinstance(declarations, dict):
-        declarations = {}
-        invalid = True
-    for value in declarations.values():
-        if not isinstance(value, dict) or not _identity(value.get("account"), value.get("model")):
-            invalid = True
-            continue
-        identities.add((value["account"], value["model"]))
-    if not identities:
+    ordered, invalid = _declared_identities(settings)
+    if not ordered:
         result["unknown_reason"] = "No valid cloud account/model pool identities are configured."
         return result
-    ordered = sorted(identities)
     truncated = len(ordered) > MAX_POOLS
     ordered = ordered[:MAX_POOLS]
     try:
@@ -172,6 +207,9 @@ def read_cloud_quota(core):
     deadline = time.monotonic() + REFRESH_SECONDS
     grouped = {}
     for account, model in ordered:
+        if config_binding(core) != binding:
+            result["unknown_reason"] = "Cloud quota configuration changed during refresh; refresh the current connection again."
+            return result
         reason = "Cloud quota could not be read; check the configured connection and account grant."
         window = None
         remaining = deadline - time.monotonic()
@@ -201,4 +239,7 @@ def read_cloud_quota(core):
         result["unknown_reason"] = "Some configured pool identities were invalid or exceeded the refresh limit."
     elif result["state"] != "ready":
         result["unknown_reason"] = "One or more cloud quota pools do not have a fresh usable observation."
+    if config_binding(core) != binding:
+        result.update(state="unknown", accounts=[],
+                      unknown_reason="Cloud quota configuration changed during refresh; refresh the current connection again.")
     return result

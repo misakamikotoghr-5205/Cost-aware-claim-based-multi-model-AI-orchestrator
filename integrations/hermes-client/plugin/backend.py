@@ -475,8 +475,7 @@ def quota_dashboard():
     cloud_module = Path(__file__).with_name("quota_cloud.py")
     if cloud_module.is_file():
         module = load_file(cloud_module, "quota_cloud")
-        if hasattr(module, "age_cloud_quota"):
-            value["cloud"] = module.age_cloud_quota(value["cloud"], time.time())
+        value["cloud"] = module.view_cloud_quota(sys.modules[__name__], value["cloud"], time.time())
     state = worker_status()
     value["node"] = {key: state.get(key) for key in ("execution_location", "platform", "running")}
     value["node"]["status"] = "running" if state.get("running") else "stopped"
