@@ -21,7 +21,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
       focusedSessionOwner: { get: () => ({ connectionId: mocks.connection, profile: mocks.profile }) }
     }, composer: { insertText: mocks.insert, submit: mocks.submit, attachImages: mocks.attach }, revealPane: vi.fn() } }
 })
-import { PointerPane } from './plugin'
+import pointerPlugin, { PointerPane } from './plugin'
 import { ClientPage } from '../../../../plugin/desktop/src/plugin'
 import { JudgeSettingsPage } from '../../../local-judge/desktop/src/plugin'
 const ctx = { storage: { get: (_: string, fallback: unknown) => fallback }, rest: vi.fn() } as any
@@ -210,4 +210,52 @@ it('revoking image consent while final commit waits invalidates delivery before 
   await act(async () => finishCommit({ draft_prompt: '请分析选区', executed: false }))
   expect(mocks.attach).not.toHaveBeenCalled(); expect(mocks.insert).not.toHaveBeenCalled()
   expect(screen.queryByText('确认加入聊天草稿')).toBeNull()
+})
+
+it('opening smart pointer asks the native compact host to hide chat using the exact focused route', async () => {
+  const open = vi.fn(async () => ({ ok: true })), register = vi.fn()
+  ;(window as any).hermesDesktop = { pointerCompact: { context: null, open } }
+  pointerPlugin.register({ ...ctx, register })
+  const command = register.mock.calls.map(([value]) => value).find(value => value.area === 'palette')
+  await command.data.run()
+  expect(open).toHaveBeenCalledWith({ sessionId: 'chat-one', profile: 'default', connectionId: 'cloud' })
+  expect(mocks.submit).not.toHaveBeenCalled()
+})
+
+it('compact UI pins owner scope and hands confirmed draft plus opted-in crop to original renderer', async () => {
+  const handoff = vi.fn(async () => ({ ok: true }))
+  const scope = { sessionId: 'original-chat', profile: 'work', connectionId: 'original-cloud' }
+  const api = vi.fn(async (request: any) => request.path.endsWith('/sessions')
+    ? { session_id: 'compact-session', revision: 1, candidates: [{ action_id: 'polish', label: '润色', description: '更清楚', preview_prompt: '请润色' }] }
+    : { draft_prompt: '请润色', executed: false })
+  ;(window as any).hermesDesktop = { api, pointerCompact: { context: { generation: 'g', scope }, handoff },
+    regionCapture: { capture: async () => ({ ...captured, region_already_cropped: true }) } }
+  render(createElement(PointerPane, { ctx }))
+  expect(screen.getByRole('textbox', { name: '关键词' })).toBeTruthy()
+  fireEvent.change(screen.getByRole('textbox', { name: '关键词' }), { target: { value: '润色' } })
+  fireEvent.click(screen.getByText('开始圈选')); await screen.findByAltText('已圈选区域预览')
+  expect((screen.getByRole('textbox', { name: '关键词' }) as HTMLInputElement).value).toBe('润色')
+  fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('润色 — 更清楚'))
+  expect(handoff).not.toHaveBeenCalled()
+  fireEvent.click(screen.getByLabelText('附上所选区域图片'))
+  fireEvent.click(screen.getByText('确认加入聊天草稿'))
+  await waitFor(() => expect(handoff).toHaveBeenCalledWith({ generation: 'g', scope, text: '请润色', imageDataUrl: captured.imageDataUrl }))
+  expect(mocks.insert).not.toHaveBeenCalled(); expect(mocks.attach).not.toHaveBeenCalled(); expect(mocks.submit).not.toHaveBeenCalled()
+  expect(JSON.stringify(api.mock.calls)).not.toContain('base64')
+  expect(await screen.findByText('草稿和选区图片已就绪。返回聊天检查后发送。')).toBeTruthy()
+})
+
+it('compact handoff failure preserves the draft and never reports success', async () => {
+  const handoff = vi.fn(async () => ({ ok: false, message: '原聊天已改变' }))
+  const api = vi.fn(async (request: any) => request.path.endsWith('/sessions')
+    ? { session_id: 'compact-session', revision: 1, candidates: [{ action_id: 'polish', label: '润色', description: '更清楚', preview_prompt: '请润色' }] }
+    : { draft_prompt: '请润色', executed: false })
+  ;(window as any).hermesDesktop = { api, pointerCompact: { context: { generation: 'g', scope: { sessionId: 'new', profile: 'default', connectionId: 'local' } }, handoff },
+    regionCapture: { capture: async () => ({ ...captured, region_already_cropped: true }) } }
+  render(createElement(PointerPane, { ctx })); fireEvent.click(screen.getByText('开始圈选')); await screen.findByAltText('已圈选区域预览')
+  fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('润色 — 更清楚'))
+  fireEvent.click(screen.getByLabelText('附上所选区域图片')); fireEvent.click(screen.getByText('确认加入聊天草稿'))
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('原聊天已改变'))
+  expect(screen.getByRole('textbox', { name: '聊天草稿预览' })).toHaveProperty('value', '请润色')
+  expect(screen.queryByText('草稿和选区图片已就绪。返回聊天检查后发送。')).toBeNull()
 })

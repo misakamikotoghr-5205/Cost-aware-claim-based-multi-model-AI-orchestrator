@@ -1,0 +1,1002 @@
+diff --git a/apps/desktop/electron/main.ts b/apps/desktop/electron/main.ts
+index 10152261..6f788b5b 100644
+--- a/apps/desktop/electron/main.ts
++++ b/apps/desktop/electron/main.ts
+@@ -133,7 +133,6 @@ import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
+ import { discoverWithTeamFallback } from './cloud-discovery'
+ import { createCloudSessionRecovery } from './cloud-session-recovery'
+ import { installCommandScreenshot } from './command-screenshot'
+-import { installRegionCapture } from './region-capture'
+ import { composerImageTimestamp } from './composer-image-name'
+ import { writeComposerPaste } from './composer-paste'
+ import { applyConnectionChange, teardownSshState } from './connection-apply'
+@@ -428,6 +427,7 @@ import {
+   localRouteFallbackProfiles,
+   undialedSshRouteSeeds
+ } from './plugin-profile-routes'
++import { installPointerCompact } from './pointer-compact'
+ import { createPortalSession, resolvePortalBaseUrl } from './portal-session'
+ import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
+ import { registerPreparedSubmissions } from './prepared-submissions'
+@@ -501,6 +501,7 @@ import {
+   createQuitTeardownCoordinator,
+   type QuitTeardownTask
+ } from './quit-teardown'
++import { installRegionCapture } from './region-capture'
+ import {
+   boundedInstallId,
+   createPrimaryInstallIdResolver,
+@@ -17951,6 +17952,10 @@ app.whenReady().then(() => {
+     rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
+     overlayPreloadPath: path.join(APP_ROOT, 'dist', 'region-capture-preload.js')
+   })
++  installPointerCompact({
++    rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
++    preloadPath: PRELOAD_PATH
++  })
+   installHudModifierTap({
+     rendererUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(),
+     summon: () => {
+diff --git a/apps/desktop/electron/pointer-compact-policy.test.ts b/apps/desktop/electron/pointer-compact-policy.test.ts
+new file mode 100644
+index 00000000..ae2cfd8d
+--- /dev/null
++++ b/apps/desktop/electron/pointer-compact-policy.test.ts
+@@ -0,0 +1,54 @@
++import { describe, expect, it } from 'vitest'
++
++import { pointerBounds, pointerHandoff, pointerScope, samePointerScope } from './pointer-compact-policy'
++
++const scope = { sessionId: 'new', profile: 'default', connectionId: 'local' }
++
++describe('pointer compact identity and screen limits', () => {
++  it('pins all three parts of the original composer route', () => {
++    expect(pointerScope(scope)).toEqual(scope)
++
++    for (const key of ['sessionId', 'profile', 'connectionId']) {
++      expect(pointerScope({ ...scope, [key]: '' })).toBeNull()
++      expect(samePointerScope(scope, { ...scope, [key]: 'different' })).toBe(false)
++    }
++
++    expect(pointerScope({ ...scope, token: 'must-not-cross' })).toBeNull()
++    expect(pointerScope({ ...scope, sessionId: 'bad\0id' })).toBeNull()
++  })
++
++  it('uses the right upper corner of a monitor with a negative origin', () => {
++    expect(pointerBounds({ x: -1920, y: -100, width: 1920, height: 1080 })).toEqual({
++      x: -396,
++      y: -84,
++      width: 380,
++      height: 480
++    })
++  })
++
++  it('clamps to a small monitor instead of stranding the controls outside it', () => {
++    const area = { x: 0, y: 0, width: 300, height: 240 }
++    const result = pointerBounds(area)
++    expect(result.x).toBeGreaterThanOrEqual(area.x)
++    expect(result.y).toBeGreaterThanOrEqual(area.y)
++    expect(result.x + result.width).toBeLessThanOrEqual(area.width)
++    expect(result.y + result.height).toBeLessThanOrEqual(area.height)
++  })
++
++  it('accepts a bounded confirmed text draft and optionally one inline cropped PNG', () => {
++    expect(pointerHandoff({ scope, generation: 'g', text: 'Draft' })).toEqual({ scope, generation: 'g', text: 'Draft' })
++    expect(
++      pointerHandoff({ scope, generation: 'g', text: 'Draft', imageDataUrl: 'data:image/png;base64,aGVsbG8=' })
++    ).not.toBeNull()
++  })
++
++  it('rejects executable/remote image payloads, unknown fields and oversized text', () => {
++    for (const imageDataUrl of ['https://example.com/screen.png', 'data:image/svg+xml,<svg/>', 'file:///screen.png']) {
++      expect(pointerHandoff({ scope, generation: 'g', text: 'Draft', imageDataUrl })).toBeNull()
++    }
++
++    expect(pointerHandoff({ scope, generation: 'g', text: 'x'.repeat(32_769) })).toBeNull()
++    expect(pointerHandoff({ scope, generation: 'g', text: 'Draft', submit: true })).toBeNull()
++    expect(pointerHandoff({ scope, generation: 'g', text: '' })).toBeNull()
++  })
++})
+diff --git a/apps/desktop/electron/pointer-compact-policy.ts b/apps/desktop/electron/pointer-compact-policy.ts
+new file mode 100644
+index 00000000..ea829691
+--- /dev/null
++++ b/apps/desktop/electron/pointer-compact-policy.ts
+@@ -0,0 +1,89 @@
++import type { PointerScope } from './pointer-compact-types'
++
++export function pointerScope(value: unknown): PointerScope | null {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) {
++    return null
++  }
++
++  const item = value as Record<string, unknown>
++
++  if (Object.keys(item).some(key => !['sessionId', 'profile', 'connectionId'].includes(key))) {
++    return null
++  }
++
++  if (
++    ['sessionId', 'profile', 'connectionId'].some(
++      key =>
++        typeof item[key] !== 'string' ||
++        !(item[key] as string).trim() ||
++        (item[key] as string).length > 256 ||
++        /[\0\r\n]/.test(item[key] as string)
++    )
++  ) {
++    return null
++  }
++
++  return {
++    sessionId: item.sessionId as string,
++    profile: item.profile as string,
++    connectionId: item.connectionId as string
++  }
++}
++
++export function samePointerScope(left: PointerScope, right: PointerScope): boolean {
++  return (
++    left.sessionId === right.sessionId && left.profile === right.profile && left.connectionId === right.connectionId
++  )
++}
++
++/** Top-right of this monitor's usable area, including negative desktop origins. */
++export function pointerBounds(area: { x: number; y: number; width: number; height: number }) {
++  const margin = Math.min(16, Math.max(0, Math.floor(Math.min(area.width, area.height) / 20)))
++  const width = Math.max(1, Math.min(380, area.width - margin * 2))
++  const height = Math.max(1, Math.min(480, area.height - margin * 2))
++
++  return { x: area.x + area.width - margin - width, y: area.y + margin, width, height }
++}
++
++export function pointerHandoff(
++  value: unknown
++): { generation: string; scope: PointerScope; text: string; imageDataUrl?: string } | null {
++  if (!value || typeof value !== 'object' || Array.isArray(value)) {
++    return null
++  }
++
++  const item = value as Record<string, unknown>
++
++  if (Object.keys(item).some(key => !['generation', 'scope', 'text', 'imageDataUrl'].includes(key))) {
++    return null
++  }
++
++  const scope = pointerScope(item.scope)
++
++  if (
++    !scope ||
++    typeof item.generation !== 'string' ||
++    item.generation.length > 80 ||
++    typeof item.text !== 'string' ||
++    !item.text.trim() ||
++    item.text.length > 32_768
++  ) {
++    return null
++  }
++
++  if (
++    item.imageDataUrl !== undefined &&
++    (typeof item.imageDataUrl !== 'string' ||
++      item.imageDataUrl.length > 12 * 1024 * 1024 ||
++      !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(item.imageDataUrl))
++  ) {
++    return null
++  }
++
++  return {
++    generation: item.generation,
++    scope,
++    text: item.text,
++    ...(item.imageDataUrl ? { imageDataUrl: item.imageDataUrl as string } : {})
++  }
++}
+diff --git a/apps/desktop/electron/pointer-compact-types.ts b/apps/desktop/electron/pointer-compact-types.ts
+new file mode 100644
+index 00000000..a1254304
+--- /dev/null
++++ b/apps/desktop/electron/pointer-compact-types.ts
+@@ -0,0 +1,33 @@
++export interface PointerScope {
++  sessionId: string
++  profile: string
++  connectionId: string
++}
++
++export interface PointerCompactContext {
++  generation: string
++  scope: PointerScope
++}
++
++export interface PointerDelivery extends PointerCompactContext {
++  requestId: string
++  text: string
++  imageDataUrl?: string
++}
++
++export interface PointerDeliveryResult {
++  ok: boolean
++  message?: string
++}
++
++export interface PointerCompactApi {
++  /** Set only for the native compact renderer; contains no auth material. */
++  context: PointerCompactContext | null
++  open: (scope: PointerScope) => Promise<PointerDeliveryResult>
++  close: () => Promise<boolean>
++  handoff: (payload: Omit<PointerDelivery, 'requestId'>) => Promise<PointerDeliveryResult>
++  isCurrent: (requestId: string, generation: string) => Promise<boolean>
++  ack: (requestId: string, generation: string, result: PointerDeliveryResult) => void
++  onDelivery: (callback: (payload: PointerDelivery) => void) => () => void
++  onCancelled: (callback: (requestId: string) => void) => () => void
++}
+diff --git a/apps/desktop/electron/pointer-compact.ts b/apps/desktop/electron/pointer-compact.ts
+new file mode 100644
+index 00000000..50b13750
+--- /dev/null
++++ b/apps/desktop/electron/pointer-compact.ts
+@@ -0,0 +1,306 @@
++import { createHash, randomUUID } from 'node:crypto'
++
++import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, nativeImage, screen } from 'electron'
++
++import { pointerBounds, pointerHandoff, pointerScope, samePointerScope } from './pointer-compact-policy'
++import type { PointerCompactContext, PointerDeliveryResult } from './pointer-compact-types'
++
++/** A local capture surface, not another chat or gateway owner. The hidden
++ * owner renderer remains mounted and is the sole authority for its composer. */
++export function installPointerCompact({ rendererUrl, preloadPath }: { rendererUrl: string; preloadPath: string }) {
++  const expected = new URL(rendererUrl)
++
++  let current: {
++    owner: BrowserWindow
++    window: BrowserWindow
++    context: PointerCompactContext
++    delivered: Set<string>
++    detach: () => void
++    delivery?: {
++      id: string
++      key: string
++      resolve: (result: PointerDeliveryResult) => void
++      timer: ReturnType<typeof setTimeout>
++    }
++  } | null = null
++
++  const trusted = (event: IpcMainEvent | IpcMainInvokeEvent) => {
++    if (event.senderFrame !== event.sender.mainFrame) {
++      return null
++    }
++
++    const win = BrowserWindow.fromWebContents(event.sender)
++
++    if (!win || win.isDestroyed()) {
++      return null
++    }
++
++    try {
++      const actual = new URL(event.senderFrame.url)
++
++      if (
++        actual.protocol !== expected.protocol ||
++        actual.host !== expected.host ||
++        actual.pathname !== expected.pathname
++      ) {
++        return null
++      }
++
++      return win
++    } catch {
++      return null
++    }
++  }
++
++  const complete = (result: PointerDeliveryResult) => {
++    const item = current?.delivery
++
++    if (!item) {
++      return
++    }
++
++    if (result.ok) {
++      current.delivered.add(item.key)
++    }
++
++    current.delivery = undefined
++    clearTimeout(item.timer)
++    item.resolve(result)
++  }
++
++  const close = (restore = true) => {
++    const item = current
++
++    if (!item) {
++      return false
++    }
++
++    if (item.delivery && !item.owner.isDestroyed()) {
++      item.owner.webContents.send('hermes:pointer-compact:cancelled', item.delivery.id)
++    }
++
++    complete({ ok: false, message: '智能指针窗口已关闭；请检查原聊天草稿。' })
++    current = null
++    item.detach()
++
++    if (!item.window.isDestroyed()) {
++      item.window.destroy()
++    }
++
++    if (restore && !item.owner.isDestroyed()) {
++      if (item.owner.isMinimized()) {
++        item.owner.restore()
++      }
++
++      item.owner.show()
++      item.owner.focus()
++    }
++
++    return true
++  }
++
++  ipcMain.on('hermes:pointer-compact:context', event => {
++    event.returnValue = trusted(event) === current?.window ? current.context : null
++  })
++
++  ipcMain.handle('hermes:pointer-compact:open', async (event, input) => {
++    const owner = trusted(event)
++    const scope = pointerScope(input)
++
++    if (!owner || !scope || new URL(event.senderFrame.url).searchParams.get('win') === 'pointer') {
++      return { ok: false, message: '需要从原生聊天打开智能指针。' }
++    }
++
++    if (current) {
++      if (current.owner === owner && samePointerScope(current.context.scope, scope)) {
++        current.window.show()
++        current.window.focus()
++        owner.hide()
++
++        return { ok: true }
++      }
++
++      close()
++    }
++
++    const area = screen.getDisplayMatching(owner.getBounds()).workArea
++
++    const win = new BrowserWindow({
++      ...pointerBounds(area),
++      frame: false,
++      show: false,
++      alwaysOnTop: true,
++      skipTaskbar: true,
++      resizable: true,
++      minimizable: false,
++      maximizable: false,
++      fullscreenable: false,
++      title: '智能指针',
++      backgroundColor: '#f8fafc',
++      webPreferences: { preload: preloadPath, contextIsolation: true, sandbox: true, nodeIntegration: false }
++    })
++
++    const context = { generation: randomUUID(), scope }
++    const onOwnerGone = () => close(false)
++
++    const onOwnerNavigate = (_event: unknown, _url: string, _inPlace: boolean, mainFrame: boolean) => {
++      if (mainFrame) {
++        close()
++      }
++    }
++
++    owner.once('closed', onOwnerGone)
++    owner.webContents.on('did-start-navigation', onOwnerNavigate)
++    current = {
++      owner,
++      window: win,
++      context,
++      delivered: new Set(),
++      detach: () => {
++        owner.removeListener('closed', onOwnerGone)
++
++        if (!owner.webContents.isDestroyed()) {
++          owner.webContents.removeListener('did-start-navigation', onOwnerNavigate)
++        }
++      }
++    }
++    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
++    win.webContents.on('will-navigate', event => event.preventDefault())
++    win.webContents.on('before-input-event', (event, input) => {
++      if (input.type === 'keyDown' && input.key === 'Escape' && !input.isAutoRepeat) {
++        event.preventDefault()
++        close()
++      }
++    })
++    win.webContents.once('render-process-gone', () => close())
++    win.once('closed', () => {
++      if (current?.window === win) {
++        close()
++      }
++    })
++    const target = new URL(rendererUrl)
++    target.searchParams.set('win', 'pointer')
++    target.hash = ''
++
++    try {
++      await win.loadURL(target.toString())
++
++      if (current?.window !== win || owner.isDestroyed()) {
++        return { ok: false }
++      }
++
++      owner.hide()
++      win.show()
++      win.focus()
++
++      return { ok: true }
++    } catch {
++      close()
++
++      return { ok: false, message: '无法打开智能指针浮框；主窗口已恢复。' }
++    }
++  })
++
++  ipcMain.handle('hermes:pointer-compact:close', event => {
++    const caller = trusted(event)
++
++    return current && (caller === current.window || caller === current.owner) ? close() : false
++  })
++
++  ipcMain.handle('hermes:pointer-compact:handoff', async (event, input) => {
++    const item = current
++    const payload = pointerHandoff(input)
++
++    if (
++      !item ||
++      trusted(event) !== item.window ||
++      !payload ||
++      payload.generation !== item.context.generation ||
++      !samePointerScope(payload.scope, item.context.scope) ||
++      item.owner.isDestroyed()
++    ) {
++      return { ok: false, message: '原聊天已改变，请返回聊天后重新打开智能指针。' }
++    }
++
++    if (item.delivery) {
++      return { ok: false, message: '上一份草稿仍在确认，请稍候。' }
++    }
++
++    const key = createHash('sha256')
++      .update(payload.text)
++      .update('\0')
++      .update(payload.imageDataUrl || '')
++      .digest('hex')
++
++    if (item.delivered.has(key)) {
++      return { ok: true }
++    }
++
++    if (item.delivered.size >= 32) {
++      return { ok: false, message: '请返回聊天检查草稿，再重新打开智能指针。' }
++    }
++
++    if (payload.imageDataUrl) {
++      const bytes = Buffer.from(payload.imageDataUrl.slice(payload.imageDataUrl.indexOf(',') + 1), 'base64')
++      const image = nativeImage.createFromBuffer(bytes)
++      const size = image.getSize()
++
++      if (bytes.length > 8 * 1024 * 1024 || image.isEmpty() || size.width * size.height > 16_777_216) {
++        return { ok: false, message: '选区图片无效或过大，请重新框选。' }
++      }
++    }
++
++    const id = randomUUID()
++
++    return await new Promise<PointerDeliveryResult>(resolve => {
++      const timer = setTimeout(() => {
++        if (current === item && item.delivery?.id === id) {
++          item.owner.webContents.send('hermes:pointer-compact:cancelled', id)
++          complete({ ok: false, message: '原聊天未确认接收。请返回聊天检查草稿后重试。' })
++        }
++      }, 12_000)
++
++      item.delivery = { id, key, resolve, timer }
++      item.owner.webContents.send('hermes:pointer-compact:delivery', { ...payload, requestId: id })
++    })
++  })
++
++  ipcMain.handle('hermes:pointer-compact:current', (event, id, generation) =>
++    Boolean(
++      current &&
++      trusted(event) === current.owner &&
++      generation === current.context.generation &&
++      current.delivery?.id === id
++    )
++  )
++
++  ipcMain.on('hermes:pointer-compact:ack', (event, id, generation, result) => {
++    if (
++      !current ||
++      trusted(event) !== current.owner ||
++      current.context.generation !== generation ||
++      current.delivery?.id !== id
++    ) {
++      return
++    }
++
++    complete({
++      ok: result?.ok === true,
++      ...(typeof result?.message === 'string' ? { message: result.message.slice(0, 500) } : {})
++    })
++  })
++
++  const reposition = () => {
++    if (!current || current.window.isDestroyed()) {
++      return
++    }
++
++    current.window.setBounds(pointerBounds(screen.getDisplayMatching(current.window.getBounds()).workArea))
++  }
++
++  screen.on('display-removed', reposition)
++  screen.on('display-metrics-changed', reposition)
++  app.once('before-quit', () => close(false))
++
++  return () => close()
++}
+diff --git a/apps/desktop/electron/preload.ts b/apps/desktop/electron/preload.ts
+index 2aef8ce0..345af82e 100644
+--- a/apps/desktop/electron/preload.ts
++++ b/apps/desktop/electron/preload.ts
+@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
+ 
+ import type { DesktopProfileRoute } from './desktop-profile'
+ import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
++import type { PointerCompactApi } from './pointer-compact-types'
+ import type { RegionCaptureApi } from './region-capture-types'
+ import { customWindowControlsEnabled } from './window-controls'
+ 
+@@ -27,6 +28,26 @@ const localSkin = ipcRenderer.sendSync('hermes:skin:local')
+ import { unwrapExpectedNotFound } from './api-expected-404'
+ 
+ contextBridge.exposeInMainWorld('hermesDesktop', {
++  pointerCompact: {
++    context: ipcRenderer.sendSync('hermes:pointer-compact:context'),
++    open: scope => ipcRenderer.invoke('hermes:pointer-compact:open', scope),
++    close: () => ipcRenderer.invoke('hermes:pointer-compact:close'),
++    handoff: payload => ipcRenderer.invoke('hermes:pointer-compact:handoff', payload),
++    isCurrent: (id, generation) => ipcRenderer.invoke('hermes:pointer-compact:current', id, generation),
++    ack: (id, generation, result) => ipcRenderer.send('hermes:pointer-compact:ack', id, generation, result),
++    onDelivery: callback => {
++      const listener = (_event, payload) => callback(payload)
++      ipcRenderer.on('hermes:pointer-compact:delivery', listener)
++
++      return () => ipcRenderer.removeListener('hermes:pointer-compact:delivery', listener)
++    },
++    onCancelled: callback => {
++      const listener = (_event, id) => callback(id)
++      ipcRenderer.on('hermes:pointer-compact:cancelled', listener)
++
++      return () => ipcRenderer.removeListener('hermes:pointer-compact:cancelled', listener)
++    }
++  } satisfies PointerCompactApi,
+   regionCapture: {
+     capture: () => ipcRenderer.invoke('hermes:region-capture:capture')
+   } satisfies RegionCaptureApi,
+diff --git a/apps/desktop/src/app/pointer-compact/owner-bridge.test.ts b/apps/desktop/src/app/pointer-compact/owner-bridge.test.ts
+new file mode 100644
+index 00000000..7cd14fe0
+--- /dev/null
++++ b/apps/desktop/src/app/pointer-compact/owner-bridge.test.ts
+@@ -0,0 +1,63 @@
++import { webcrypto } from 'node:crypto'
++
++import { afterEach, beforeEach, expect, it, vi } from 'vitest'
++
++const mocks = vi.hoisted(() => ({ scope: { sessionId: 'chat', profile: 'work', connectionId: 'cloud' }, attach: vi.fn(), insert: vi.fn() }))
++vi.mock('@/sdk', () => ({ host: { state: {
++  focusedSessionOwner: { get: () => ({ profile: mocks.scope.profile, connectionId: mocks.scope.connectionId }) },
++  focusedStoredSessionId: { get: () => mocks.scope.sessionId }, focusedSessionId: { get: () => mocks.scope.sessionId },
++  focusedSessionProfile: { get: () => mocks.scope.profile }, connectionId: { get: () => mocks.scope.connectionId }
++}, composer: { attachImages: mocks.attach, insertText: mocks.insert } } }))
++import { installPointerOwnerBridge } from './owner-bridge'
++
++let delivery: (payload: any) => void
++let cancelled: (id: string) => void
++let api: any
++const payload = () => ({ generation: 'g', requestId: crypto.randomUUID(), scope: { ...mocks.scope }, text: 'Reviewed draft', imageDataUrl: 'data:image/png;base64,aGVsbG8=' })
++const settle = async () => { for (let i = 0; i < 20; i++) await new Promise(resolve => setTimeout(resolve, 2)) }
++
++beforeEach(() => {
++  vi.stubGlobal('crypto', webcrypto)
++  mocks.scope = { sessionId: 'chat', profile: 'work', connectionId: 'cloud' }
++  mocks.attach.mockReset().mockResolvedValue(true); mocks.insert.mockReset().mockResolvedValue(true)
++  api = { context: null, onDelivery: vi.fn(fn => { delivery = fn; return () => undefined }),
++    onCancelled: vi.fn(fn => { cancelled = fn; return () => undefined }), isCurrent: vi.fn(async () => true), ack: vi.fn() }
++  ;(window as any).hermesDesktop = { pointerCompact: api }
++})
++afterEach(() => vi.unstubAllGlobals())
++
++it('only the original ordinary renderer claims composer deliveries', () => {
++  api.context = { generation: 'g', scope: mocks.scope }
++  installPointerOwnerBridge()
++  expect(api.onDelivery).not.toHaveBeenCalled()
++})
++
++it('rejects a changed owner connection before attaching or inserting anything', async () => {
++  installPointerOwnerBridge(); const request = payload(); mocks.scope.connectionId = 'different'
++  delivery(request); await settle()
++  expect(mocks.attach).not.toHaveBeenCalled(); expect(mocks.insert).not.toHaveBeenCalled()
++  expect(api.ack).toHaveBeenCalledWith(request.requestId, 'g', expect.objectContaining({ ok: false }))
++})
++
++it('waits for real image ingestion then inserts text addressed to the frozen session', async () => {
++  installPointerOwnerBridge(); const request = payload(); delivery(request); await settle()
++  expect(mocks.attach).toHaveBeenCalledWith('chat', [expect.any(Blob)])
++  expect(mocks.insert).toHaveBeenCalledWith('chat', 'Reviewed draft', { mode: 'block' })
++  expect(api.ack).toHaveBeenCalledWith(request.requestId, 'g', { ok: true })
++})
++
++it('cancellation during image ingestion prevents later text insertion', async () => {
++  let finish: (value: boolean) => void = () => undefined
++  mocks.attach.mockImplementation(() => new Promise(resolve => { finish = resolve }))
++  installPointerOwnerBridge(); const request = payload(); delivery(request); await settle()
++  cancelled(request.requestId); finish(true); await settle()
++  expect(mocks.insert).not.toHaveBeenCalled()
++  expect(api.ack).toHaveBeenCalledWith(request.requestId, 'g', expect.objectContaining({ ok: false }))
++})
++
++it('a text retry after a partial delivery does not attach the same cropped image twice', async () => {
++  mocks.insert.mockResolvedValueOnce(false)
++  const dispose = installPointerOwnerBridge(); delivery(payload()); await settle(); delivery(payload()); await settle()
++  expect(mocks.attach).toHaveBeenCalledTimes(1); expect(mocks.insert).toHaveBeenCalledTimes(2)
++  dispose()
++})
+diff --git a/apps/desktop/src/app/pointer-compact/owner-bridge.ts b/apps/desktop/src/app/pointer-compact/owner-bridge.ts
+new file mode 100644
+index 00000000..8e25540a
+--- /dev/null
++++ b/apps/desktop/src/app/pointer-compact/owner-bridge.ts
+@@ -0,0 +1,112 @@
++import { host } from '@/sdk'
++
++import { samePointerScope } from '../../../electron/pointer-compact-policy'
++import type { PointerScope } from '../../../electron/pointer-compact-types'
++
++export function focusedPointerScope(): PointerScope {
++  const owner = host.state.focusedSessionOwner.get()
++
++  return {
++    sessionId: host.state.focusedStoredSessionId.get() ?? host.state.focusedSessionId.get() ?? 'new',
++    profile: owner?.profile ?? host.state.focusedSessionProfile.get(),
++    connectionId: owner?.connectionId ?? host.state.connectionId.get() ?? ''
++  }
++}
++
++/** The small capture window has no gateway/composer of its own. Only this
++ * still-mounted original renderer can acknowledge a real draft insertion. */
++export function installPointerOwnerBridge(): () => void {
++  const api = window.hermesDesktop?.pointerCompact
++
++  if (!api || api.context) {
++    return () => undefined
++  }
++
++  const pending = new Set<string>()
++  const acceptedImages = new Set<string>()
++  const offCancelled = api.onCancelled(id => pending.delete(id))
++
++  const offDelivery = api.onDelivery(payload => {
++    if (pending.has(payload.requestId)) {
++      return
++    }
++
++    pending.add(payload.requestId)
++
++    const current = async () =>
++      pending.has(payload.requestId) &&
++      samePointerScope(payload.scope, focusedPointerScope()) &&
++      (await api.isCurrent(payload.requestId, payload.generation))
++
++    void (async () => {
++      let imageAccepted = false
++
++      try {
++        if (!(await current())) {
++          throw new Error('聊天、连接或窗口已改变，请返回原聊天重新打开智能指针。')
++        }
++
++        if (payload.imageDataUrl) {
++          const encoded = payload.imageDataUrl.slice(payload.imageDataUrl.indexOf(',') + 1)
++          const bytes = Uint8Array.from(atob(encoded), char => char.charCodeAt(0))
++          const digest = await crypto.subtle.digest('SHA-256', bytes)
++
++          const imageKey =
++            payload.generation +
++            ':' +
++            Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
++
++          if (!(await current())) {
++            return
++          }
++
++          imageAccepted =
++            acceptedImages.has(imageKey) ||
++            (await host.composer.attachImages(payload.scope.sessionId, [new Blob([bytes], { type: 'image/png' })]))
++
++          if (!imageAccepted) {
++            throw new Error('原生聊天没有确认接收选区图片。')
++          }
++
++          acceptedImages.add(imageKey)
++
++          if (acceptedImages.size > 32) {
++            acceptedImages.delete(acceptedImages.values().next().value!)
++          }
++        }
++
++        if (!(await current())) {
++          throw new Error('聊天已改变，未加入文字草稿。请检查原聊天附件。')
++        }
++
++        const accepted = await host.composer.insertText(payload.scope.sessionId, payload.text, { mode: 'block' })
++        api.ack(
++          payload.requestId,
++          payload.generation,
++          accepted
++            ? { ok: true }
++            : {
++                ok: false,
++                message: imageAccepted
++                  ? '图片已加入，但文字未确认。请返回聊天检查草稿。'
++                  : '原聊天输入框尚未就绪，草稿仍保留在浮框。'
++              }
++        )
++      } catch (error) {
++        api.ack(payload.requestId, payload.generation, {
++          ok: false,
++          message: error instanceof Error ? error.message : '草稿接收失败。'
++        })
++      } finally {
++        pending.delete(payload.requestId)
++      }
++    })()
++  })
++
++  return () => {
++    pending.clear()
++    acceptedImages.clear()
++    offCancelled()
++    offDelivery()
++  }
++}
+diff --git a/apps/desktop/src/app/pointer-compact/pointer-root.tsx b/apps/desktop/src/app/pointer-compact/pointer-root.tsx
+new file mode 100644
+index 00000000..0b5dd1fb
+--- /dev/null
++++ b/apps/desktop/src/app/pointer-compact/pointer-root.tsx
+@@ -0,0 +1,182 @@
++import { QueryClientProvider } from '@tanstack/react-query'
++import { StrictMode, useEffect, useState } from 'react'
++import { createRoot } from 'react-dom/client'
++
++import { ErrorBoundary } from '@/components/error-boundary'
++import { HapticsProvider } from '@/components/haptics-provider'
++import { RootTooltipProvider } from '@/components/ui/tooltip'
++import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
++import { useContributions } from '@/contrib/react/use-contributions'
++import { loadRuntimePlugin, unloadRuntimePlugin } from '@/contrib/runtime-loader'
++import { ProfileI18nProvider } from '@/i18n/profile-provider'
++import { isReadFileErrorResult } from '@/lib/desktop-fs'
++import { queryClient } from '@/lib/query-client'
++import { ThemeProvider } from '@/themes/context'
++
++/** Reuse the installed, admitted package and its SDK entry. No bundled pointer
++ * implementation, second chat, gateway dial or background plugin discovery. */
++async function loadPointer() {
++  const desktop = window.hermesDesktop
++
++  if (!desktop?.pointerCompact?.context) {
++    throw new Error('智能指针窗口身份无效，请返回聊天重试。')
++  }
++
++  const resolveRoot = desktop.desktopPluginsRoot
++
++  if (!resolveRoot) {
++    throw new Error('请更新原生客户端后重试。')
++  }
++
++  const root = await resolveRoot()
++
++  const folder = (await desktop.readDir(root)).entries.find(
++    entry => entry.name === 'smart-pointer' && entry.isDirectory
++  )
++
++  if (!folder) {
++    throw new Error('请先在客户端安装智能指针扩展。')
++  }
++
++  const file = (await desktop.readDir(folder.path)).entries.find(
++    entry => entry.name === 'plugin.js' && !entry.isDirectory
++  )
++
++  if (!file) {
++    throw new Error('智能指针扩展缺少界面，请重新安装。')
++  }
++
++  const source = await desktop.readFileText(file.path)
++
++  if (isReadFileErrorResult(source)) {
++    throw new Error('无法读取智能指针扩展。')
++  }
++
++  const id = await loadRuntimePlugin(source.text, 'smart-pointer', {
++    defaultEnabled: false,
++    file: file.path,
++    packageName: 'smart-pointer'
++  })
++
++  if (id !== 'smart-pointer') {
++    throw new Error('智能指针扩展版本不匹配。')
++  }
++}
++
++function CompactSurface() {
++  const panes = useContributions('panes')
++  const pane = panes.find(item => item.id === 'smart-pointer:pane' && item.source === 'plugin:smart-pointer')
++  const [error, setError] = useState('')
++  const [loaded, setLoaded] = useState(false)
++  useEffect(() => {
++    let active = true
++    void loadPointer()
++      .then(() => {
++        if (active) {
++          setLoaded(true)
++        }
++      })
++      .catch(error => {
++        if (active) {
++          setError(String(error.message || error))
++        }
++      })
++
++    return () => {
++      active = false
++      unloadRuntimePlugin('smart-pointer')
++    }
++  }, [])
++  useEffect(() => {
++    const dismiss = (event: KeyboardEvent) => {
++      if (event.key === 'Escape' && !event.isComposing) {
++        event.preventDefault()
++        void window.hermesDesktop.pointerCompact?.close()
++      }
++    }
++
++    window.addEventListener('keydown', dismiss, true)
++
++    return () => window.removeEventListener('keydown', dismiss, true)
++  }, [])
++
++  return (
++    <div
++      className="pointer-window"
++      style={{
++        height: '100vh',
++        display: 'flex',
++        flexDirection: 'column',
++        color: 'var(--foreground)',
++        background: 'var(--background)'
++      }}
++    >
++      <header
++        style={
++          {
++            display: 'flex',
++            alignItems: 'center',
++            justifyContent: 'space-between',
++            padding: '8px 12px',
++            borderBottom: '1px solid var(--border)',
++            flexShrink: 0,
++            WebkitAppRegion: 'drag'
++          } as React.CSSProperties
++        }
++      >
++        <strong style={{ fontSize: 12 }}>智能指针</strong>
++        <button
++          aria-label="返回聊天并关闭智能指针"
++          onClick={() => void window.hermesDesktop.pointerCompact?.close()}
++          style={
++            {
++              border: 0,
++              background: 'transparent',
++              cursor: 'pointer',
++              fontSize: 12,
++              WebkitAppRegion: 'no-drag'
++            } as React.CSSProperties
++          }
++        >
++          返回聊天 ×
++        </button>
++      </header>
++      <main style={{ minHeight: 0, flex: 1 }}>
++        {error || (loaded && !pane?.render) ? (
++          <div role="alert" style={{ padding: 16, fontSize: 12 }}>
++            {error || '请在原生 Capabilities → Plugins 中启用智能指针 Desktop 界面。'}
++          </div>
++        ) : pane?.render ? (
++          <ContribBoundary id={pane.id}>
++            <ContribRender render={pane.render} />
++          </ContribBoundary>
++        ) : (
++          <p role="status" style={{ padding: 16 }}>
++            正在打开智能指针…
++          </p>
++        )}
++      </main>
++    </div>
++  )
++}
++
++export function mountPointerCompact() {
++  document.title = '智能指针'
++  createRoot(document.getElementById('root')!).render(
++    <StrictMode>
++      <ErrorBoundary label="pointer-compact">
++        <QueryClientProvider client={queryClient}>
++          <ProfileI18nProvider>
++            <ThemeProvider>
++              <HapticsProvider>
++                <RootTooltipProvider>
++                  <CompactSurface />
++                </RootTooltipProvider>
++              </HapticsProvider>
++            </ThemeProvider>
++          </ProfileI18nProvider>
++        </QueryClientProvider>
++      </ErrorBoundary>
++    </StrictMode>
++  )
++}
+diff --git a/apps/desktop/src/global.d.ts b/apps/desktop/src/global.d.ts
+index 29a467f6..eee62e63 100644
+--- a/apps/desktop/src/global.d.ts
++++ b/apps/desktop/src/global.d.ts
+@@ -7,6 +7,7 @@ import type { ScreenshotApi } from '../electron/command-screenshot-types'
+ import type { HudModifierApi } from '../electron/hud-modifier-types'
+ import type { MachineProfile } from '../electron/machine-profile'
+ import type { HermesNotification } from '../electron/notification-types'
++import type { PointerCompactApi } from '../electron/pointer-compact-types'
+ import type { KeepAwakeMode } from '../electron/power-save'
+ import type { RegionCaptureApi } from '../electron/region-capture-types'
+ import type { UpdateHoldWire } from '../electron/update-hold-types'
+@@ -36,6 +37,7 @@ declare global {
+     hermesDesktop: {
+       /** Explicit native screen choice; pixels remain local until the consumer acts. */
+       regionCapture?: RegionCaptureApi
++      pointerCompact?: PointerCompactApi
+       // Resolve a backend connection. Omit `profile` (or pass the primary) for
+       // the window's backend; pass a named profile to dial/reuse that profile's
+       // cached gateway descriptor.
+diff --git a/apps/desktop/src/main.tsx b/apps/desktop/src/main.tsx
+index 4ef94636..615ff958 100644
+--- a/apps/desktop/src/main.tsx
++++ b/apps/desktop/src/main.tsx
+@@ -26,6 +26,7 @@ import { createRoot } from 'react-dom/client'
+ import { HashRouter } from 'react-router'
+ 
+ import App from './app'
++import { installPointerOwnerBridge } from './app/pointer-compact/owner-bridge'
+ import { RootErrorBoundary } from './components/error-boundary'
+ import { HapticsProvider } from './components/haptics-provider'
+ import { RootTooltipProvider } from './components/ui/tooltip'
+@@ -83,7 +84,10 @@ if (winParam === 'overlay') {
+   void import('./app/quick-entry/quick-entry-root').then(({ mountQuickEntry }) => mountQuickEntry())
+ } else if (winParam === 'wake') {
+   void import('./app/wake-indicator/wake-indicator-root').then(({ mountWakeIndicator }) => mountWakeIndicator())
++} else if (winParam === 'pointer') {
++  void import('./app/pointer-compact/pointer-root').then(({ mountPointerCompact }) => mountPointerCompact())
+ } else {
++  installPointerOwnerBridge()
+   // CSS animations do not inherit Chromium's JS-loop pause policy. Mirror the
+   // main window's visibility state to :root so decorative infinite
+   // animations stop producing frames when nobody can see them.
