@@ -3,11 +3,11 @@ interface LocalRequest extends PluginRestOptions { path: string; connectionId: '
 interface NativeApi { api<T>(request: LocalRequest): Promise<T> }
 /** Never resolve machine-local capabilities through the active chat gateway. */
 export function localApi(profile = 'default') {
-  if (!profile.trim() || /[\\/\0]/.test(profile)) throw new Error('Invalid local profile')
+  if (!profile.trim() || /[\\/\0]/.test(profile)) throw new Error('本机配置名称无效，请使用不含路径分隔符的配置名称。')
   return async function request<T>(path: string, options: PluginRestOptions = {}): Promise<T> {
-    if (!path.startsWith('/') || path.split(/[?#]/, 1)[0].split('/').includes('..')) throw new Error('Invalid plugin path')
+    if (!path.startsWith('/') || path.split(/[?#]/, 1)[0].split('/').includes('..')) throw new Error('扩展请求路径无效，请重新打开页面后重试。')
     const bridge = (window as unknown as { hermesDesktop?: NativeApi }).hermesDesktop
-    if (!bridge?.api) throw new Error('本机 Hermes 代理不可用，请更新桌面客户端；不会转发到远程聊天连接。')
+    if (!bridge?.api) throw new Error('本机代理不可用，请更新桌面客户端；请求不会转发到远程聊天连接。')
     try {
       return await bridge.api<T>({ ...options, path: '/api/plugins/orchestrator-core' + path,
         connectionId: 'local', profile, priority: 'foreground' })
@@ -21,7 +21,7 @@ export function localApi(profile = 'default') {
       // Only static entry routes diagnose an unloaded plugin. Missing task/session
       // IDs and download jobs must keep their original resource-specific errors.
       if (notFound && ['/settings', '/extensions', '/quota/dashboard'].includes(endpoint)) {
-        throw new Error('本机扩展接口尚未加载。请在原生插件页启用 Agent，重启对应本机代理，再重新连接。请等待当前任务结束后重启。', { cause: failure })
+        throw new Error('本机扩展接口尚未加载。请在原生插件页启用智能体功能，重启对应本机代理，再重新连接。请等待当前任务结束后重启。', { cause: failure })
       }
       throw failure
     }
