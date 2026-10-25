@@ -39,6 +39,7 @@ jobs:
       - name: Validate native acceptance scripts
         run: |
           node --check scripts/acceptance/native-desktop.mjs
+          node --check scripts/acceptance/capture-environment.mjs
           node --check scripts/probe_native_backend.mjs
       - name: Locate public npm content cache
         id: npm-cache-location

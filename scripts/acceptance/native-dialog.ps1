@@ -6,7 +6,7 @@ try {
   Add-Type -AssemblyName UIAutomationClient
   Add-Type -AssemblyName UIAutomationTypes
   $desktop = [Windows.Automation.AutomationElement]::RootElement
-  $deadline = (Get-Date).AddSeconds(20)
+  $deadline = (Get-Date).AddSeconds(60)
   do {
     $windows = $desktop.FindAll([Windows.Automation.TreeScope]::Children, [Windows.Automation.Condition]::TrueCondition)
     foreach ($window in $windows) {

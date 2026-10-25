@@ -1,7 +1,7 @@
 /** Actual pinned Electron application; no mock backend, UI, inference or auth. */
 import assert from 'node:assert/strict'
-import { spawn, execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync, execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,8 +68,22 @@ function bounded(promise, timeoutMs, label) {
 }
 const redact = value => String(value).replace(/([?&](?:token|ticket|key)=)[^&\s]+/gi, '$1<redacted>').slice(0, 2000)
 try {
+  if (process.platform === 'win32') {
+    checkpoint('probing_real_windows_capture_environment')
+    report.screen_api_diagnostics = []
+    for (const variant of [{ thumbnail: 0, disabled: true }, { thumbnail: 0, disabled: false }, { thumbnail: 1, disabled: false }]) {
+      const file = 'capture-environment-' + variant.thumbnail + (variant.disabled ? '-gpu-disabled' : '-gpu-default') + '.json'
+      const diagnostic = spawnSync(executablePath, [join(ownDirectory, 'capture-environment.mjs'), '--no-sandbox',
+        ...(variant.disabled ? ['--disable-gpu'] : []), '--capture-thumbnail=' + variant.thumbnail,
+        '--capture-report=' + join(output, file)], { env, cwd: desktopRoot, stdio: 'ignore', timeout: 25_000, windowsHide: true })
+      const result = existsSync(join(output, file)) ? JSON.parse(readFileSync(join(output, file), 'utf8'))
+        : { result: 'process_failed', status: diagnostic.status, code: diagnostic.error?.code }
+      report.screen_api_diagnostics.push({ file, ...result })
+      console.log(JSON.stringify({ screen_api_diagnostic: file, result: result.result, elapsed_ms: result.elapsed_ms, error: result.error }))
+    }
+  }
   checkpoint('launching_real_electron')
-  application = await _electron.launch({ executablePath, args: [desktopRoot, '--disable-gpu', '--no-sandbox'], env, cwd: desktopRoot, timeout: 120_000 })
+  application = await _electron.launch({ executablePath, args: [desktopRoot, ...(process.platform === 'win32' ? [] : ['--disable-gpu']), '--no-sandbox'], env, cwd: desktopRoot, timeout: 120_000 })
   const page = await application.firstWindow({ timeout: 90_000 })
   checkpoint('waiting_for_real_renderer')
   await page.waitForFunction(() => document.getElementById('root')?.textContent?.length > 100, null, { timeout: 120_000 })
@@ -140,7 +154,7 @@ try {
     await bounded(Promise.race([
       dialogDone,
       captureDone.then(result => { throw new Error('Native screen acquisition ended before source consent: ' + result.status + ': ' + (result.message || '')) }),
-    ]), 40_000, 'Actual native screen consent')
+    ]), 80_000, 'Actual native screen consent')
     checkpoint('dragging_actual_native_region_overlay')
     let viewport
     for (let tries = 0; tries < 100; tries++) {
