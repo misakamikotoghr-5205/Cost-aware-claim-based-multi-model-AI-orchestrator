@@ -75,9 +75,11 @@ does not open the GUI. `--skip-runtime` is only for an explicitly preprepared
 source and still requires the same real backend probe; it cannot manufacture a
 ready result. `--skip-deps` similarly reuses already installed Node dependencies.
 
-Only `orchestrator-core` is installed by preparation. Native Capabilities →
-Plugins controls activation; package installation itself does not enable or
-execute Python/JavaScript. A fresh isolated Hermes home has no provider login;
+Preparation installs and enables only `orchestrator-core`, so the quota dashboard
+appears in the sidebar on first launch. Existing explicit core-disable choices
+are preserved. Native Capabilities → Plugins still controls Agent and desktop
+activation; the standalone package installer itself does not enable or execute
+Python/JavaScript. A fresh isolated Hermes home has no provider login;
 use the existing native onboarding and OAuth/API-key interfaces. No credentials
 are copied from another home.
 
