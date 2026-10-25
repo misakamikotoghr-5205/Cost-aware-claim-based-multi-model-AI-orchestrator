@@ -226,10 +226,10 @@ index 00000000..1f258842
 +}
 diff --git a/apps/desktop/electron/pointer-compact.ts b/apps/desktop/electron/pointer-compact.ts
 new file mode 100644
-index 00000000..e74a5284
+index 00000000..f2c090b4
 --- /dev/null
 +++ b/apps/desktop/electron/pointer-compact.ts
-@@ -0,0 +1,325 @@
+@@ -0,0 +1,326 @@
 +import { createHash, randomUUID } from 'node:crypto'
 +
 +import { app, BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, nativeImage, screen } from 'electron'
@@ -373,6 +373,7 @@ index 00000000..e74a5284
 +    })
 +
 +    const context = { generation: randomUUID(), scope }
++    const ownerContents = owner.webContents
 +    const onOwnerGone = () => close(false)
 +
 +    const onOwnerNavigate = (_event: unknown, _url: string, _inPlace: boolean, mainFrame: boolean) => {
@@ -382,7 +383,7 @@ index 00000000..e74a5284
 +    }
 +
 +    owner.once('closed', onOwnerGone)
-+    owner.webContents.on('did-start-navigation', onOwnerNavigate)
++    ownerContents.on('did-start-navigation', onOwnerNavigate)
 +    current = {
 +      owner,
 +      window: win,
@@ -391,8 +392,8 @@ index 00000000..e74a5284
 +      detach: () => {
 +        owner.removeListener('closed', onOwnerGone)
 +
-+        if (!owner.webContents.isDestroyed()) {
-+          owner.webContents.removeListener('did-start-navigation', onOwnerNavigate)
++        if (!ownerContents.isDestroyed()) {
++          ownerContents.removeListener('did-start-navigation', onOwnerNavigate)
 +        }
 +      }
 +    }
