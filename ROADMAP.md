@@ -1,13 +1,16 @@
-# Current delivery and roadmap
+# MISAKA AGENT delivery and roadmap
 
 ## Delivered: native client, fleet and independently installable extensions
 
 - Complete pinned Hermes native desktop; native OAuth/API independent of cloud.
+- MISAKA application identity, icons, own welcome screen and draft suggestions.
+- Integrated account-quota Dashboard with source freshness and unknown states.
+- Independent portable Agent Skill for other hosts, using native private tickets.
 - Original offline planner and scoring preserved.
 - Locally configured Hermes, DeepSeek Harness, Ollama and restricted MCP bridge.
 - Independent free-model discovery installation package with explicit online refresh.
 - Independent local-judge package, model setup and constrained local inference.
-- Independent smart-pointer package: region, keywords, suggested intents and draft review.
+- Independent smart-pointer package: top-right 360-pixel compact window, region, keywords, suggested intents and draft review.
 - One cloud with multiple paired local nodes, owner/node isolation, capability routing, revocation and replay-safe reconnect.
 - Cloud-owned SQLite ledger with explicit quota units and atomic reservations.
 - Independent local verifier, durable receipts and conservative unknown outcomes.
@@ -20,8 +23,9 @@ is not equivalent to real-machine or live-account acceptance.
 
 - Install and authenticate selected native executors on each intended machine.
 - Verify current upstream CLI versions and real subscription quota sources.
-- Exercise Windows and Ubuntu GUI sessions, real local judge/model hardware,
-  paired desktop tools and Computer Use.
+- Linux/X11 GUI, the compact pointer, real small-model judgement and package
+  lifecycle have been exercised. Continue Windows capture and intended Office/
+  Computer Use host acceptance; component evidence is not a live-account test.
 - Deploy private cloud connectivity, credentials, backups and reconciliation.
 
 ## Stability work

@@ -1,10 +1,10 @@
-# Cost-Aware Claim-Based Multi-Model AI Orchestrator
+# MISAKA AGENT
 
-> A **cost-aware, quota-aware, claim-based, weighted-voting** multi-model AI
-> orchestrator. It does not always reach for the strongest model — it picks the
-> best **cost/performance** path across GPT, Claude, Gemini, Grok, Codex and
-> DeepSeek based on task type, model capability, remaining quota, price, failure
-> risk and output quality.
+One desktop client for local OAuth/API conversations, optional cloud-to-local
+collaboration, account quota, and a compact smart pointer. MISAKA AGENT retains
+the complete pinned Hermes native runtime and adds a cost-aware multi-model
+orchestrator. A portable Agent Skill connects other compatible agents to the
+same runtime, quota Dashboard and paired nodes.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
@@ -30,8 +30,9 @@ model is saved for the task only it can do.
 
 ### Current implementation
 
-The desktop is based on the **complete native Hermes Electron client** at a
-locked upstream revision. Conversations, streaming, history, approvals, Skills,
+The desktop presents **MISAKA AGENT**, its own icons, welcome screen and draft
+suggestions, on the complete native Hermes Electron client at a locked revision.
+Conversations, streaming, history, approvals, Skills,
 MCP, tools, profiles and provider OAuth/API settings remain upstream features.
 The earlier Tk task form is retained only with `--legacy`.
 
@@ -43,13 +44,15 @@ separate installable extension ZIPs.** They are delivered together, not preinsta
 | Capability | Status |
 |---|---|
 | Offline scoring, claims, voting, role assignment and shadow prices | Implemented; deterministic |
-| Native Hermes desktop and upstream features | Whole upstream retained; narrow native region-capture patch |
+| MISAKA AGENT desktop and upstream features | Native identity, icons, welcome screen and preserved Hermes runtime |
+| Integrated quota Dashboard | Codex/Claude OAuth windows and OpenRouter/DeepSeek API balances; other or unavailable observations remain unknown |
 | Hermes / DeepSeek Harness / Ollama / restricted MCP execution | Implemented; tested with real fixture subprocesses and loopback HTTP |
 | Free-model discovery | Separate installation package; explicit online refresh, TTL cache and JSON import |
-| Local judgment and smart pointer | Separate packages; local model setup and intent-to-draft workflow |
+| Local judgment and smart pointer | Separate packages; bounded judgement and a top-right compact intent-to-draft window |
+| Portable Agent Skill | Independent ZIP; native private gateway tickets, quota, routing, optional extensions and shared fleet controls |
 | Atomic quota reservations, explicit units and unknown-outcome holds | Implemented; real provider entitlement requires observed account data |
 | One cloud and multiple local nodes | Pairing, revocable tokens, capability routing, workspaces and receipts |
-| Real subscription/GUI/Computer Use deployment acceptance | Not performed in this development environment |
+| Real-machine acceptance | Linux native GUI, local judgement, package lifecycle and loopback fleet checked; real account/Office deployment requires its actual host and credentials |
 
 See [desktop setup](docs/desktop.md), [cloud/local runtime](docs/cloud-local.md)
 and [ROADMAP.md](ROADMAP.md) for scope and validation limits.
@@ -64,6 +67,7 @@ python -m src.desktop
 The launcher prepares/builds the pinned native source using its locked tooling.
 See [native setup](docs/native-client.md) for prerequisites and native build
 commands. OAuth/API authentication stays in Hermes's native provider settings.
+The default MISAKA profile is `~/.misaka-agent`. Cloud use is optional.
 Build all optional packages together, then install only the ZIPs you want:
 
 ```bash
@@ -73,6 +77,18 @@ python scripts/build_extensions.py --ids all --upstream /path/to/pinned/hermes
 Uninstalled extensions contribute no UI, hooks, screenshot capture or inference.
 Local model weights are downloaded explicitly when requested, rather than being
 presented as bundled weights. See [extension setup](docs/native-extensions.md).
+
+For other agents, build the independent standard Skill and copy its folder into
+the host's Skills directory; see [installation and supported commands](docs/agent-skill.md):
+
+```bash
+python scripts/build_agent_skill.py
+```
+
+The Skill reuses the selected MISAKA runtime. It carries no provider credentials,
+does not install optional extensions, and does not replace the host agent's
+permission policy. See [quota Dashboard](docs/quota-dashboard.md) and
+[compact pointer](docs/smart-pointer.md) for the desktop interface.
 
 The advanced, account-free protocol fixture exercises real local HTTP, file
 execution, quota reservation and independent verification:
