@@ -23,8 +23,13 @@ $configuration = @{
 }
 $configuration | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 (Join-Path $ProfileDirectory 'config.yaml')
 'ACCEPTANCE_ONLY_API_KEY=isolated-no-inference' | Set-Content -Encoding ascii (Join-Path $ProfileDirectory '.env')
+$coreArchive = Join-Path $Repository "dist/extensions/orchestrator-core-$version.zip"
+$preparedCoreSha = (Get-FileHash $coreArchive -Algorithm SHA256).Hash
 python (Join-Path $Repository 'scripts/build_extensions.py') --ids all --upstream $Source
 if ($LASTEXITCODE -ne 0) { throw 'Independent extension ZIP build failed.' }
+if ((Get-FileHash $coreArchive -Algorithm SHA256).Hash -ne $preparedCoreSha) {
+  throw 'Repeated native core compilation changed the installation ZIP.'
+}
 $pointerArchive = Join-Path $Repository "dist/extensions/smart-pointer-$version.zip"
 python -m src.extension_packages --hermes-home $ProfileDirectory install $pointerArchive
 if ($LASTEXITCODE -ne 0) { throw 'Actual optional pointer ZIP installation failed.' }
