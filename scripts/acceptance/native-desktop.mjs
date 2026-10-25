@@ -49,21 +49,39 @@ const report = {
   screenshots: [], checks: [],
 }
 let application
+function checkpoint(phase) {
+  report.phase = phase
+  writeFileSync(join(output, 'native-desktop-report.json'), JSON.stringify(report, null, 2))
+  console.log(JSON.stringify({ phase, checks: report.checks.length, screenshots: report.screenshots }))
+}
+function bounded(promise, timeoutMs, label) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(label + ' exceeded ' + timeoutMs + 'ms')), timeoutMs)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
 const redact = value => String(value).replace(/([?&](?:token|ticket|key)=)[^&\s]+/gi, '$1<redacted>').slice(0, 2000)
 try {
+  checkpoint('launching_real_electron')
   application = await _electron.launch({ executablePath, args: [desktopRoot, '--disable-gpu', '--no-sandbox'], env, cwd: desktopRoot, timeout: 120_000 })
   const page = await application.firstWindow({ timeout: 90_000 })
+  checkpoint('waiting_for_real_renderer')
   await page.waitForFunction(() => document.getElementById('root')?.textContent?.length > 100, null, { timeout: 120_000 })
+  checkpoint('waiting_for_real_backend_ui')
+  await page.screenshot({ path: join(output, '00-windows-native-boot.png'), timeout: 5000 })
+  report.screenshots.push('00-windows-native-boot.png')
   // Wait for the actual backend boot to settle; no fake boot or fixture server.
   await page.waitForFunction(() => {
     const text = document.body.textContent || ''
     return /provider|API key|Sign in|ready|Ready/.test(text) && !/Starting Hermes/.test(text)
   }, null, { timeout: 180_000 })
-  await page.evaluate(async () => {
+  checkpoint('checking_authenticated_native_status')
+  await bounded(page.evaluate(async () => {
     const status = await window.hermesDesktop.api({ path: '/api/status', method: 'GET',
       connectionId: 'local', profile: 'default', priority: 'foreground' })
     if (!status || typeof status !== 'object') throw new Error('Real authenticated native status API did not respond')
-  })
+  }), 90_000, 'Real authenticated native status API')
   report.checks.push('Real authenticated native status API responded through the actual preload transport')
   await page.screenshot({ path: join(output, '01-windows-native-first-run.png') })
   report.screenshots.push('01-windows-native-first-run.png')
@@ -95,6 +113,7 @@ try {
   }
 
   if (process.platform === 'win32') {
+    checkpoint('opening_actual_native_screen_dialog')
     const electronPid = await application.evaluate(() => process.pid)
     const dialogProcess = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(ownDirectory, 'native-dialog.ps1'), '-ApplicationPid', String(electronPid)], { stdio: 'ignore' })
     const dialogDone = new Promise((resolveDialog, rejectDialog) => {
@@ -105,7 +124,8 @@ try {
     const captureDone = page.evaluate(() => window.hermesDesktop.regionCapture.capture())
     // Mark the promise handled while the native dialog is still open.
     captureDone.catch(() => {})
-    await dialogDone
+    await bounded(dialogDone, 40_000, 'Actual native screen consent')
+    checkpoint('dragging_actual_native_region_overlay')
     let viewport
     for (let tries = 0; tries < 100; tries++) {
       viewport = await application.evaluate(async ({ BrowserWindow }) => {
@@ -132,7 +152,7 @@ try {
       const overlay = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL().startsWith('data:text/html'))
       overlay.webContents.sendInputEvent({ type: 'mouseUp', ...point, button: 'left', clickCount: 1 })
     }, end)
-    const result = await captureDone
+    const result = await bounded(captureDone, 100_000, 'Actual native region capture')
     assert.equal(result.status, 'ok')
     assert.equal(result.region_already_cropped, true)
     assert.equal(result.width, Math.ceil(end.x * viewport.bitmapWidth / width) - Math.floor(40 * viewport.bitmapWidth / width))
@@ -148,8 +168,10 @@ try {
 } catch (error) {
   report.result = 'failed'
   report.error = redact(error.message)
+  console.error(JSON.stringify({ phase: report.phase, error: report.error }))
   process.exitCode = 1
 } finally {
+  checkpoint('closing_actual_native_application')
   if (application) {
     try {
       const page = application.windows()[0]
@@ -158,9 +180,19 @@ try {
         report.screenshots.push('failure.png')
       }
     } catch {}
-    await application.close().catch(() => {})
+    try {
+      await bounded(application.close(), 15_000, 'Actual Electron close')
+    } catch (error) {
+      application.process().kill('SIGKILL')
+      report.teardown = 'forced_after_close_timeout'
+      if (report.result === 'passed') {
+        report.result = 'failed'
+        report.error = redact(error.message)
+        process.exitCode = 1
+      }
+    }
   }
   report.finished_at = new Date().toISOString()
-  writeFileSync(join(output, 'native-desktop-report.json'), JSON.stringify(report, null, 2))
+  checkpoint('completed')
   console.log(JSON.stringify({ result: report.result, checks: report.checks, screenshots: report.screenshots }))
 }

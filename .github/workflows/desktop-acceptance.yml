@@ -36,6 +36,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Validate native acceptance scripts
+        run: |
+          node --check scripts/acceptance/native-desktop.mjs
+          node --check scripts/probe_native_backend.mjs
       - name: Locate public npm content cache
         id: npm-cache-location
         run: |
@@ -62,6 +66,7 @@ jobs:
           New-Item -ItemType Directory -Force acceptance-results | Out-Null
           & scripts/acceptance/windows-office.ps1 -OutputDirectory (Join-Path $PWD 'acceptance-results')
       - name: Actual Electron launch, native capture and screenshots
+        timeout-minutes: 8
         run: |
           $spec = Get-Content integrations/hermes-client/upstream.json | ConvertFrom-Json
           $source = Join-Path "$env:RUNNER_TEMP/native-source" "hermes-$($spec.commit)"
