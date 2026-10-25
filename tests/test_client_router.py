@@ -233,6 +233,111 @@ class ClientRouterTests(unittest.TestCase):
 
 
 class JudgeTests(unittest.TestCase):
+    def test_judge_sees_only_bounded_current_task_and_relevant_candidates(self):
+        judge = OllamaLocalJudge()
+        task = TaskCard("t", "BEGIN " + "正文" * 10000 + " END constraint", "writing",
+                        requires=["marketing_copy"] + ["long-label-" * 20] * 20,
+                        expected_output="EXCLUDED_OUTPUT")
+        candidates = [card(f"local-{index}", capabilities={"final_writing": .8, "reasoning": .7,
+                            "video_generation": .9, "UNRELATED_CAPABILITY": .4},
+                            metadata={"credential": "EXCLUDED_METADATA"}) for index in range(6)]
+        opener = MagicMock()
+        judge._opener = opener
+        opener.open.return_value.__enter__.return_value = io.BytesIO(
+            json.dumps({"response": '{"model_id":"local-1"}', "done": True}).encode())
+        self.assertEqual(judge.choose(task, candidates, [ScoreBreakdown(f"local-{index}", .9)
+                                                       for index in range(6)]), "local-1")
+        payload = json.loads(opener.open.call_args.args[0].data)
+        view = json.loads(payload["prompt"])
+        self.assertLessEqual(len(payload["prompt"].encode()), judge.MAX_PROMPT_BYTES)
+        self.assertEqual(len(view["task"]["title"]), 512)
+        self.assertTrue(view["task"]["title"].startswith("BEGIN "))
+        self.assertTrue(view["task"]["title"].endswith(" END constraint"))
+        self.assertIn(" … ", view["task"]["title"])
+        self.assertTrue(view["scope"]["title_abbreviated"])
+        self.assertTrue(view["scope"]["requirement_text_abbreviated"])
+        self.assertEqual(view["scope"]["requirements_omitted"], 13)
+        self.assertEqual(view["scope"]["candidates_omitted"], 3)
+        self.assertEqual([row["model_id"] for row in view["candidates"]], ["local-0", "local-1", "local-2"])
+        self.assertEqual(set(view["scores"]), {"local-0", "local-1", "local-2"})
+        for row in view["candidates"]:
+            self.assertEqual(set(row["capabilities"]), {"final_writing", "reasoning"})
+        for secret in ["EXCLUDED_OUTPUT", "EXCLUDED_METADATA", "UNRELATED_CAPABILITY", "video_generation"]:
+            self.assertNotIn(secret, payload["prompt"])
+        self.assertEqual(payload["options"]["num_ctx"], 4096)
+        self.assertEqual(payload["options"]["num_predict"], 128)
+        self.assertFalse(payload["think"])
+        self.assertEqual(payload["format"], {"type": "object", "properties": {
+            "model_id": {"type": "string", "enum": ["local-0", "local-1", "local-2"]}},
+            "required": ["model_id"], "additionalProperties": False})
+
+    def test_judge_cannot_select_an_omitted_candidate(self):
+        judge = OllamaLocalJudge(max_candidates=2)
+        opener = MagicMock()
+        judge._opener = opener
+        opener.open.return_value.__enter__.return_value = io.BytesIO(
+            json.dumps({"response": '{"model_id":"local-2"}', "done": True}).encode())
+        with self.assertRaisesRegex(ValueError, "unapproved model"):
+            judge.choose(TaskCard("t", "task", "general"), [card(f"local-{i}") for i in range(3)], [])
+
+    def test_input_budget_failure_keeps_deterministic_route_without_inference(self):
+        judge = OllamaLocalJudge(max_task_chars=2048)
+        judge._opener = MagicMock()
+        task = TaskCard("t", "😀" * 2048, "general")
+        result = ClientRouter(judge=judge).route(task, [card(), card("local-b")], now=NOW)
+        self.assertEqual(result.selected.model_id, "local-a")
+        self.assertTrue(any("deterministic selection retained" in note for note in result.notes))
+        judge._opener.open.assert_not_called()
+
+    def test_single_admitted_shortlist_choice_skips_the_judge(self):
+        judge = OllamaLocalJudge()
+        with patch.object(judge, "choose", side_effect=AssertionError("unneeded inference")) as choose:
+            result = ClientRouter(judge=judge).route(TaskCard("t", "task", "general"),
+                [card(), card("rejected-paid", billing_mode="paid_api")], now=NOW)
+        self.assertEqual(result.selected.model_id, "local-a")
+        choose.assert_not_called()
+        self.assertIn("paid_api_disabled", result.rejected["rejected-paid"])
+        self.assertTrue(any("Single admitted shortlist candidate" in note for note in result.notes))
+
+    def test_judge_focus_respects_admission_and_existing_expiry_order(self):
+        judge = OllamaLocalJudge(max_candidates=1)
+        opener = MagicMock()
+        judge._opener = opener
+        opener.open.return_value.__enter__.return_value = io.BytesIO(json.dumps({
+            "response": '{"model_id":"soon-expiring"}', "done": True, "done_reason": "stop"}).encode())
+        cards = [card("higher-score", capabilities={"reasoning": .85}, expires_at=NOW + 7200),
+                 card("soon-expiring", capabilities={"reasoning": .8}, expires_at=NOW + 60),
+                 card("rejected-paid", billing_mode="paid_api"),
+                 card("rejected-tools", metadata={"required_tools": ["unavailable-tool"]}),
+                 card("rejected-quota", billing_mode="free", quota_remaining=0)]
+        result = ClientRouter(judge=judge).route(TaskCard("t", "task", "general"), cards, now=NOW)
+        self.assertEqual(result.ranking[0].agent, "higher-score")
+        self.assertEqual(result.selected.model_id, "soon-expiring")
+        payload = json.loads(opener.open.call_args.args[0].data)
+        view = json.loads(payload["prompt"])
+        self.assertEqual([item["model_id"] for item in view["candidates"]], ["soon-expiring"])
+        self.assertEqual(set(view["scores"]), {"soon-expiring"})
+        for rejected in ["rejected-paid", "rejected-tools", "rejected-quota"]:
+            self.assertIn(rejected, result.rejected)
+            self.assertNotIn(rejected, payload["prompt"])
+
+    def test_judge_view_limits_are_bounded_integers(self):
+        for limits in [{"max_task_chars": 127}, {"max_task_chars": 2049}, {"max_task_chars": True},
+                       {"max_candidates": 0}, {"max_candidates": 9}, {"max_candidates": 2.5}]:
+            with self.subTest(limits=limits), self.assertRaises(ValueError):
+                OllamaLocalJudge(**limits)
+
+    def test_incomplete_or_error_envelope_cannot_report_a_judge_choice(self):
+        judge = OllamaLocalJudge()
+        opener = MagicMock()
+        judge._opener = opener
+        for state in [{}, {"done": False}, {"done": True, "error": "generation failed"},
+                      {"done": True, "done_reason": "length"}]:
+            opener.open.return_value.__enter__.return_value = io.BytesIO(
+                json.dumps({"response": '{"model_id":"local-a"}', **state}).encode())
+            with self.subTest(state=state), self.assertRaisesRegex(ValueError, "response envelope"):
+                judge.choose(TaskCard("t", "task", "general"), [card()], [])
+
     def test_remote_redirectable_and_cloud_endpoints_are_not_allowed(self):
         for url in ["http://example.com", "https://127.0.0.1/path", "http://user@localhost:11434", "http://localhost?target=remote"]:
             with self.subTest(url=url), self.assertRaises(ValueError):
@@ -247,11 +352,11 @@ class JudgeTests(unittest.TestCase):
         opener = MagicMock()
         judge._opener = opener
         opener.open.return_value.__enter__.return_value = io.BytesIO(
-            json.dumps({"response": '{"model_id":"local-a"}'}).encode())
+            json.dumps({"response": '{"model_id":"local-a"}', "done": True}).encode())
         self.assertEqual(judge.choose(task, [card()], []), "local-a")
         for body in ['{"model_id":"paid"}', '{"model_id":"local-a","command":"run"}',
                      '{"model_id":"other","model_id":"local-a"}', 'text']:
-            opener.open.return_value.__enter__.return_value = io.BytesIO(json.dumps({"response": body}).encode())
+            opener.open.return_value.__enter__.return_value = io.BytesIO(json.dumps({"response": body, "done": True}).encode())
             with self.assertRaises(ValueError):
                 judge.choose(task, [card()], [])
 
@@ -262,7 +367,7 @@ class JudgeTests(unittest.TestCase):
         for effect in [TimeoutError("timeout"), "paid-not-admitted"]:
             with patch.object(judge, "choose", side_effect=effect if isinstance(effect, Exception) else None,
                               return_value=effect):
-                receipt = router.route(task, [card()], now=NOW)
+                receipt = router.route(task, [card(), card("local-b")], now=NOW)
             self.assertEqual(receipt.selected.model_id, "local-a")
             self.assertTrue(any("deterministic selection retained" in note for note in receipt.notes))
 

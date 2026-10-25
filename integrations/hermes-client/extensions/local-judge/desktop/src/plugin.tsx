@@ -2,13 +2,13 @@ import { Button, ErrorState, Input, Loader, type HermesPlugin, type PluginContex
 import { localApi } from './local-api'
 import { useEffect, useRef, useState } from 'react'
 interface ModelJob { job_id: string; status: string; model: string; progress?: unknown; error?: string }
-interface JudgeSettings { base_url: string; model: string; timeout: number }
+interface JudgeSettings { base_url: string; model: string; timeout: number; max_task_chars: number; max_candidates: number }
 const CSS = `.judge-settings{display:grid;align-content:start;gap:16px;padding:20px;color:var(--ui-text-primary)}.judge-settings label{display:grid;gap:6px;font-size:12px}.judge-settings p{font-size:12px;color:var(--ui-text-secondary);margin:0}.judge-actions{display:flex;gap:8px;flex-wrap:wrap}`
 export function JudgeSettingsPage({ ctx }: { ctx: PluginContext }) {
   const [localProfile, setLocalProfile] = useState(() => ctx.storage.get('local-profile', 'default'))
   const [profileInput, setProfileInput] = useState(localProfile)
   const api = localApi(localProfile)
-  const [settings, setSettings] = useState<JudgeSettings>({ base_url: 'http://127.0.0.1:11434', model: 'qwen3:4b', timeout: 5 })
+  const [settings, setSettings] = useState<JudgeSettings>({ base_url: 'http://127.0.0.1:11434', model: 'qwen3:4b', timeout: 5, max_task_chars: 512, max_candidates: 3 })
   const [job, setJob] = useState<ModelJob | null>(null)
   const [setup, setSetup] = useState<{ runtime_reachable: boolean; model_installed: boolean; model: string } | null>(null)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [result, setResult] = useState('')
@@ -57,6 +57,9 @@ export function JudgeSettingsPage({ ctx }: { ctx: PluginContext }) {
     <label>本机 Ollama 地址<Input value={settings.base_url} disabled={busy} onChange={event => setSettings(value => ({ ...value, base_url: event.target.value }))} /></label>
     <label>判断模型<Input value={settings.model} disabled={busy} onChange={event => setSettings(value => ({ ...value, model: event.target.value }))} /></label>
     <label>超时（秒）<Input type="number" min={1} max={60} value={settings.timeout} disabled={busy} onChange={event => setSettings(value => ({ ...value, timeout: Number(event.target.value) }))} /></label>
+    <label>任务摘要最多字符数<Input type="number" min={128} max={2048} value={settings.max_task_chars} disabled={busy} onChange={event => setSettings(value => ({ ...value, max_task_chars: Number(event.target.value) }))} /></label>
+    <label>参与判断的候选数<Input type="number" min={1} max={8} value={settings.max_candidates} disabled={busy} onChange={event => setSettings(value => ({ ...value, max_candidates: Number(event.target.value) }))} /></label>
+    <p>仅有多个合格候选时才调用判断模型，默认查看最多 512 个字符的当前任务摘要和 3 个候选。长任务保留开头与末尾，并标明省略；仅附带相关能力与确定性评分，不读取对话历史、附件或截图。</p>
     <div className="judge-actions"><Button disabled={busy} onClick={() => action(false)}>保存设置</Button><Button variant="secondary" disabled={busy} onClick={() => action(true)}>测试本机连接</Button></div>
     <div className="judge-actions"><Button variant="secondary" disabled={busy} onClick={inspectSetup}>检测安装状态</Button>
       <Button variant="secondary" disabled={busy || (!!job && ['queued', 'running', 'cancelling'].includes(job.status))} onClick={pullModel}>安装所选本地模型</Button>

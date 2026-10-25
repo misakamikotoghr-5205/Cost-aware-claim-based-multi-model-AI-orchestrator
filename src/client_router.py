@@ -19,7 +19,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from .quota_manager import QuotaManager
 from .registry import Registry
-from .scoring_engine import ScoringEngine
+from .scoring_engine import REQUIRE_TO_DIMENSION, TYPE_TO_DIMENSIONS, ScoringEngine
 from .task_card import ScoreBreakdown, TaskCard
 
 if TYPE_CHECKING:
@@ -142,10 +142,16 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 class OllamaLocalJudge:
-    """Optional local judge. Its output can only select admitted candidates."""
+    """Optional local judge over a small, explicitly abbreviated routing view.
+
+    The router still performs full admission/scoring. This view is only for a
+    bounded tie-break and never expands the judge's authority.
+    """
+
+    MAX_PROMPT_BYTES = 8192
 
     def __init__(self, base_url: str = "http://127.0.0.1:11434", model: str = "qwen3:4b",
-                 timeout: float = 5.0):
+                 timeout: float = 5.0, *, max_task_chars: int = 512, max_candidates: int = 3):
         parsed = urlsplit(base_url)
         try:
             loopback = ipaddress.ip_address(parsed.hostname or "").is_loopback
@@ -159,26 +165,64 @@ class OllamaLocalJudge:
             raise ValueError("judge model must name a local Ollama model")
         if _number(timeout) is None or not 0 < timeout <= 60:
             raise ValueError("judge timeout must be between 0 and 60 seconds")
+        if type(max_task_chars) is not int or not 128 <= max_task_chars <= 2048:
+            raise ValueError("judge max_task_chars must be an integer between 128 and 2048")
+        if type(max_candidates) is not int or not 1 <= max_candidates <= 8:
+            raise ValueError("judge max_candidates must be an integer between 1 and 8")
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.max_task_chars = max_task_chars
+        self.max_candidates = max_candidates
         # Loopback requests must not inherit an outbound HTTP proxy or redirect
         # to another origin. No external service is consulted for judging.
         self._opener = build_opener(ProxyHandler({}), _NoRedirect())
 
     def choose(self, task: TaskCard, cards: list[ModelCard],
                ranking: list[ScoreBreakdown]) -> str:
-        allowed = {card.model_id for card in cards}
+        # Input order comes from the existing score/expiry shortlist. Do not
+        # rerank here or inspect candidate metadata, history, outputs or files.
+        focused = cards[:self.max_candidates]
+        allowed = {card.model_id for card in focused}
+        if not allowed or any(len(model_id.encode("utf-8")) > 256 for model_id in allowed):
+            raise ValueError("judge candidate identity exceeds the bounded routing view")
+        title = str(task.title)
+        shortened = len(title) > self.max_task_chars
+        if shortened:
+            # Keep both the initial request and final constraints, marking the
+            # omission rather than presenting this excerpt as a full reading.
+            head = (self.max_task_chars - 3) * 3 // 4
+            title = title[:head] + " … " + title[-(self.max_task_chars - head - 3):]
+        requires = [value for value in task.requires[:8] if isinstance(value, str)]
+        dimensions = []
+        for dimension in ([REQUIRE_TO_DIMENSION.get(token) for token in requires]
+                          + TYPE_TO_DIMENSIONS.get(task.type, ["reasoning"])):
+            if dimension and dimension not in dimensions:
+                dimensions.append(dimension)
+        dimensions = dimensions[:4] or ["reasoning"]
         prompt = json.dumps({
-            "instruction": "Select one candidate for the task. Return only JSON with one model_id key.",
-            "task": {"title": task.title, "type": task.type, "requires": task.requires,
+            "instruction": "Select one candidate using this partial routing summary, not a full task review. "
+                           "Return only JSON with one model_id key.",
+            "scope": {"title_abbreviated": shortened,
+                      "requirements_omitted": max(0, len(task.requires) - len(requires)),
+                      "requirement_text_abbreviated": any(len(value) > 64 for value in requires),
+                      "candidates_omitted": len(cards) - len(focused)},
+            "task": {"title": title, "type": str(task.type)[:64],
+                     "requires": [value[:64] for value in requires],
                      "value_level": task.value_level},
-            "candidates": [{"model_id": card.model_id, "capabilities": card.capabilities,
-                            "billing_mode": card.billing_mode} for card in cards],
+            "candidates": [{"model_id": card.model_id,
+                            "capabilities": {dimension: card.capabilities[dimension]
+                                             for dimension in dimensions if dimension in card.capabilities},
+                            "billing_mode": card.billing_mode} for card in focused],
             "scores": {score.agent: score.total for score in ranking if score.agent in allowed},
         }, ensure_ascii=False)
-        payload = json.dumps({"model": self.model, "prompt": prompt, "format": "json",
-                              "stream": False, "options": {"temperature": 0, "num_predict": 128}}).encode()
+        if len(prompt.encode("utf-8")) > self.MAX_PROMPT_BYTES:
+            raise ValueError("judge routing summary exceeds the input budget")
+        schema = {"type": "object", "properties": {"model_id": {"type": "string", "enum": sorted(allowed)}},
+                  "required": ["model_id"], "additionalProperties": False}
+        payload = json.dumps({"model": self.model, "prompt": prompt, "format": schema,
+                              "stream": False, "think": False,
+                              "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 128}}).encode()
         request = Request(self.base_url + "/api/generate", data=payload,
                           headers={"Content-Type": "application/json"}, method="POST")
         with self._opener.open(request, timeout=self.timeout) as response:
@@ -186,7 +230,9 @@ class OllamaLocalJudge:
         if len(raw) > 1024 * 1024:
             raise ValueError("judge response too large")
         envelope = _json(raw)
-        if not isinstance(envelope, dict) or not isinstance(envelope.get("response"), str):
+        if (not isinstance(envelope, dict) or not isinstance(envelope.get("response"), str)
+                or envelope.get("done") is not True or envelope.get("error")
+                or envelope.get("done_reason") not in {None, "stop"}):
             raise ValueError("invalid Ollama response envelope")
         result = _json(envelope["response"])
         if (not isinstance(result, dict) or set(result) != {"model_id"}
@@ -275,13 +321,15 @@ class ClientRouter:
             receipt.notes.append("Prefer soon-expiring quota among models within the configured score margin.")
         else:
             selected = ordered[0]
-        if self.judge is not None:
+        if self.judge is not None and len(shortlist) > 1:
             try:
                 chosen = self.judge.choose(task, shortlist, receipt.ranking)
                 selected = next(card for card in shortlist if card.model_id == chosen)
-                receipt.notes.append("Local Ollama judge selected an admitted candidate.")
+                receipt.notes.append("Local Ollama judge selected an admitted candidate using a bounded routing summary.")
             except Exception as error:
                 receipt.notes.append(f"Local judge unavailable or invalid ({type(error).__name__}); deterministic selection retained.")
+        elif self.judge is not None:
+            receipt.notes.append("Single admitted shortlist candidate; local judge skipped.")
         receipt.selected = selected
         receipt.candidates = [selected] + [card for card in ordered if card.model_id != selected.model_id]
         receipt.notes.append("Scores use the existing local ScoringEngine; shared quota still requires an atomic reservation.")

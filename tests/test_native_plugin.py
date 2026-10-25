@@ -176,7 +176,7 @@ def ollama():
                 return
             assert body["model"] == "judge-local" and body["stream"] is False
             response = "invalid" if state["fail"] else json.dumps({"model_id": state["choice"]})
-            raw = json.dumps({"response": response}).encode()
+            raw = json.dumps({"response": response, "done": True, "done_reason": "stop"}).encode()
             self.send_response(200); self.end_headers(); self.wfile.write(raw)
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
