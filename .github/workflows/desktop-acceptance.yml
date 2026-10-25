@@ -13,6 +13,9 @@ on:
       - 'integrations/hermes-client/**'
 permissions:
   contents: read
+concurrency:
+  group: windows-native-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   windows-desktop:
     runs-on: windows-latest
