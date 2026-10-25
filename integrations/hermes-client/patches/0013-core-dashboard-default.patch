@@ -1,0 +1,206 @@
+diff --git a/apps/desktop/src/contrib/runtime-loader.test.ts b/apps/desktop/src/contrib/runtime-loader.test.ts
+index 3d3b3d16..aeaa803d 100644
+--- a/apps/desktop/src/contrib/runtime-loader.test.ts
++++ b/apps/desktop/src/contrib/runtime-loader.test.ts
+@@ -5,7 +5,7 @@ import type * as HermesModule from '@/hermes'
+ import { $previewScriptGrants, grantPreviewScript } from '@/store/plugin-preview-grants'
+ 
+ import { emitGatewayEvent } from './events'
+-import { $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
++import { $pluginDecisions, $pluginRecords, publishPlugin, setPluginEnabled } from './plugins-store'
+ import {
+   discoverRuntimePlugins,
+   loadRuntimePlugin,
+@@ -214,6 +214,162 @@ describe('scanDiskPlugins (#66899)', () => {
+   })
+ })
+ 
++
++describe('MISAKA shipped core desktop default', () => {
++  it.each([
++    {
++      packageName: 'orchestrator-core',
++      ownDefault: true,
++      decision: undefined,
++      active: true
++    },
++    {
++      packageName: 'orchestrator-core',
++      ownDefault: true,
++      decision: false,
++      active: false
++    },
++    {
++      packageName: 'orchestrator-core',
++      ownDefault: false,
++      decision: undefined,
++      active: false
++    },
++    {
++      packageName: 'local-judge',
++      ownDefault: true,
++      decision: undefined,
++      active: false
++    },
++    {
++      packageName: 'free-models',
++      ownDefault: true,
++      decision: undefined,
++      active: false
++    },
++    {
++      packageName: 'smart-pointer',
++      ownDefault: true,
++      decision: undefined,
++      active: false
++    },
++    {
++      packageName: 'other-package',
++      ownDefault: true,
++      decision: undefined,
++      active: false
++    }
++  ])(
++    'loads $packageName with own default $ownDefault / explicit $decision as active=$active',
++    async ({ packageName, ownDefault, decision, active }) => {
++      const root = '/local/.hermes/desktop-plugins'
++      const folder = `${root}/${packageName}`
++      let present = true
++      desktopPluginsRoot.mockResolvedValue(root)
++      readDir.mockImplementation(async dir => ({
++        entries:
++          dir === root
++            ? present
++              ? [{ isDirectory: true, name: packageName, path: folder }]
++              : []
++            : dir === folder
++              ? [
++                  {
++                    isDirectory: false,
++                    name: '.hermes-package.json',
++                    path: `${folder}/.hermes-package.json`
++                  },
++                  {
++                    isDirectory: false,
++                    name: 'plugin.js',
++                    path: `${folder}/plugin.js`
++                  }
++                ]
++              : []
++      }))
++      readFileText.mockImplementation(async file => ({
++        text: file.endsWith('.hermes-package.json')
++          ? JSON.stringify({ package: packageName })
++          : `export default { id: ${JSON.stringify(packageName)}, defaultEnabled: ${ownDefault}, register() { globalThis.__shippedCoreRegister() } }`
++      }))
++      watchPreviewFile.mockResolvedValue({ id: `watch-${packageName}` })
++      const register = vi.fn()
++
++      const globals = globalThis as unknown as {
++        __shippedCoreRegister?: () => void
++      }
++
++      globals.__shippedCoreRegister = register
++      const oldDecisions = $pluginDecisions.get()
++      const decisions = { ...oldDecisions }
++      delete decisions[packageName]
++      $pluginDecisions.set(decisions)
++
++      const oldStored = localStorage.getItem('hermes.desktop.pluginDecisions.v2')
++
++      const create = vi
++        .spyOn(URL, 'createObjectURL')
++        .mockImplementation(
++          blob =>
++            `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
++        )
++
++      const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
++
++      const RealBlob = globalThis.Blob
++      vi.stubGlobal(
++        'Blob',
++        class {
++          constructor(public parts: string[]) {}
++        }
++      )
++
++      try {
++        if (decision !== undefined) {
++          await setPluginEnabled(packageName, decision)
++        }
++
++        await discoverRuntimePlugins()
++        expect($pluginRecords.get()[packageName]).toMatchObject({
++          packageName,
++          kind: 'disk',
++          status: active ? 'loaded' : 'disabled'
++        })
++        expect(register).toHaveBeenCalledTimes(active ? 1 : 0)
++
++        if (decision === false) {
++          await discoverRuntimePlugins()
++          expect($pluginRecords.get()[packageName].status).toBe('disabled')
++          expect(register).not.toHaveBeenCalled()
++        }
++      } finally {
++        present = false
++        await discoverRuntimePlugins()
++        $pluginDecisions.set(oldDecisions)
++
++        if (oldStored === null) {
++          localStorage.removeItem('hermes.desktop.pluginDecisions.v2')
++        } else {
++          localStorage.setItem('hermes.desktop.pluginDecisions.v2', oldStored)
++        }
++
++        create.mockRestore()
++        revoke.mockRestore()
++        vi.stubGlobal('Blob', RealBlob)
++        delete globals.__shippedCoreRegister
++      }
++    }
++  )
++
++  it('does not invent a core plugin when the installed desktop folder is absent', async () => {
++    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
++    readDir.mockResolvedValue({ entries: [] })
++    await discoverRuntimePlugins()
++    expect($pluginRecords.get()['orchestrator-core']).toBeUndefined()
++    expect(readFileText).not.toHaveBeenCalled()
++  })
++})
++
+ describe('watchRuntimePlugins dir watch (#66899)', () => {
+   it('watches the Electron-resolved app root, never the backend hermes_home', async () => {
+     desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+diff --git a/apps/desktop/src/contrib/runtime-loader.ts b/apps/desktop/src/contrib/runtime-loader.ts
+index d1d17d2e..87b51b83 100644
+--- a/apps/desktop/src/contrib/runtime-loader.ts
++++ b/apps/desktop/src/contrib/runtime-loader.ts
+@@ -584,10 +584,11 @@ async function diskRoots(): Promise<DiskRoot[]> {
+ }
+ 
+ /** Marker Electron writes beside a materialized unified-package half. Its
+- *  presence means: opt-in posture (the Python half is installed-but-inert
++ *  presence normally means opt-in posture (the Python half is installed-but-inert
+  *  until allowlisted — GHSA-mcfc-hp25-cjv7 — so the desktop half matches), and
+  *  the record carries the package name so the Plugins page pairs it with the
+- *  agent row. */
++ *  agent row. MISAKA ships its own core dashboard enabled by default; optional
++ *  and third-party packages keep this opt-in posture. */
+ const PACKAGE_MARKER = '.hermes-package.json'
+ 
+ interface PackageMarker {
+@@ -924,8 +925,9 @@ async function scanDiskPlugins(reloadKnown = false): Promise<void> {
+         const marker = await readPackageMarker(desktop, dir.path)
+ 
+         const record: DiskPlugin = {
+-          // A unified package's desktop half ships opt-in, like its agent half.
+-          defaultEnabled: marker ? false : undefined,
++          // Only MISAKA's shipped core is a default client surface. The
++          // plugin's own default and explicit user decisions still apply.
++          defaultEnabled: marker ? marker.package === 'orchestrator-core' : undefined,
+           file,
+           id: null,
+           origin: dir.name,
