@@ -3,6 +3,7 @@ from pathlib import Path
 import importlib.util
 import hashlib
 import sys
+import json
 from fastapi import APIRouter, HTTPException
 
 _file = Path(__file__).resolve().parents[1] / "backend.py"
@@ -124,3 +125,16 @@ def worker_stop():
 @router.get("/tasks/{task_id}")
 def get_task(task_id: str):
     return invoke(lambda: {"task": backend._fleet().task(task_id)})
+
+
+@router.post("/tasks/{task_id}/cancel")
+def cancel_task(task_id: str):
+    return invoke(lambda: {"task": backend._fleet().task(task_id, "cancel", {})})
+
+
+@router.post("/agent/fleet")
+def agent_fleet(body: dict):
+    # The external-agent skill and native model tool share one owner/node/tool/
+    # workspace admission path. Host agents retain their own permission policy.
+    module = backend.load_file(Path(__file__).resolve().parents[1] / "fleet_tools.py", "native_fleet_api")
+    return invoke(lambda: json.loads(module.perform(backend, body)))

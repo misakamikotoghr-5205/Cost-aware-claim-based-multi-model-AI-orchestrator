@@ -1,0 +1,13 @@
+{
+  "id": "misaka-agent",
+  "format": "agent-skills",
+  "version": "0.2.0",
+  "license": "MIT",
+  "entry": "SKILL.md",
+  "minimum_python": "3.10",
+  "required_core": "orchestrator-core",
+  "minimum_core_version": "0.2.0",
+  "hermes_commit": "4dcef215cfe41bd2d02c2d1dad6e257a18101216",
+  "optional_packages": ["local-judge", "free-models", "smart-pointer"],
+  "installs_optional_packages": false
+}

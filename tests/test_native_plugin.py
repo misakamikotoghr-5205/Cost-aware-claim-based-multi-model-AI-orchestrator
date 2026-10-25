@@ -192,6 +192,20 @@ def test_quota_dashboard_get_fences_changed_cloud_cache_without_requests(install
     assert dashboard.path.read_bytes() == before
 
 
+def test_external_agent_rest_reuses_native_fleet_gate(installed, monkeypatch):
+    fastapi=pytest.importorskip('fastapi');testclient=pytest.importorskip('fastapi.testclient')
+    api=load(installed.core/'dashboard/plugin_api.py','native_api')
+    app=fastapi.FastAPI();app.include_router(api.router,prefix='/api/plugins/orchestrator-core')
+    client=testclient.TestClient(app)
+    monkeypatch.setattr(installed.backend,'_fleet',lambda:pytest.fail('Disabled exposure cannot resolve fleet access'))
+    result=client.post('/api/plugins/orchestrator-core/agent/fleet',json={'action':'submit','task_id':'stable'}).json()
+    assert result['submitted'] is False and 'Enable' in result['error']
+    config=installed.backend.defaults();config['fleet_tools']['enabled']=True;config['server']['url']='http://127.0.0.1:1'
+    installed.backend.write_state(installed.backend.PLUGIN_ID,config)
+    result=client.post('/api/plugins/orchestrator-core/agent/fleet',json={'action':'list','backend':{}}).json()
+    assert result['submitted'] is False and 'Unknown' in result['error']
+
+
 @pytest.fixture
 def ollama():
     state = {"choice": "second", "fail": False, "calls": [], "remote": False}
