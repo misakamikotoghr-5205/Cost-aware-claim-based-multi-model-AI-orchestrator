@@ -247,9 +247,12 @@ def native_accounts():
     # returns metadata only; no key is copied into this unsupported-provider row.
     present = {item["provider"] for item in results}
     from hermes_cli.auth import get_api_key_provider_status
-    for provider, profile in PROVIDER_REGISTRY.items():
-        if provider in present or getattr(profile, "auth_type", "") != "api_key":
+    checked = set(present)
+    for alias, profile in PROVIDER_REGISTRY.items():
+        provider = str(getattr(profile, "id", alias))
+        if provider in checked or getattr(profile, "auth_type", "") != "api_key":
             continue
+        checked.add(provider)
         try:
             metadata = get_api_key_provider_status(provider)
             if metadata.get("configured") is True:
