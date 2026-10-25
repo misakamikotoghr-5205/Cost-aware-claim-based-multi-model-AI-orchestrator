@@ -196,7 +196,9 @@ async function realCompactCrop(application, compact, output) {
 export async function verifyDashboard(main, output) {
   await main.getByRole('button', { name: /^(Capabilities|技能与工具)$/ }).click()
   await main.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
-  await main.getByRole('button', { name: '云端本地协同', exact: true }).filter({ hasText: '云端本地协同' }).click()
+  await main.getByPlaceholder(/^(Search plugins|搜索插件)$/).fill('云端本地协同')
+  await main.locator('[data-catalog-cards="plugins"], [data-catalog-list="plugins"]')
+    .getByRole('button', { name: '云端本地协同', exact: true }).click()
   const desktop = main.getByRole('switch', { name: /^(Desktop|桌面): 云端本地协同$/ })
   await desktop.check()
   assert.equal(await desktop.getAttribute('aria-checked'), 'true')
@@ -227,7 +229,9 @@ export async function verifyDashboard(main, output) {
 export async function verifyCompact(application, main, output, ownerId) {
   await main.getByRole('button', { name: /^(Capabilities|技能与工具)$/ }).click()
   await main.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
-  await main.getByRole('button', { name: '智能指针', exact: true }).filter({ hasText: '智能指针' }).click()
+  await main.getByPlaceholder(/^(Search plugins|搜索插件)$/).fill('智能指针')
+  await main.locator('[data-catalog-cards="plugins"], [data-catalog-list="plugins"]')
+    .getByRole('button', { name: '智能指针', exact: true }).click()
   const agent = main.getByRole('switch', { name: /^(Agent|智能体): 智能指针$/ })
   assert.equal(await agent.getAttribute('aria-checked'), 'true', 'Native Python half must already be admitted')
   const desktop = main.getByRole('switch', { name: /^(Desktop|桌面): 智能指针$/ })
