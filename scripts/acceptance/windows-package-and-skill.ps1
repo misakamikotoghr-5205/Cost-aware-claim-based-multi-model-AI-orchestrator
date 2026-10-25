@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Repository,
+﻿param([Parameter(Mandatory=$true)][string]$Repository,
       [Parameter(Mandatory=$true)][string]$Source,
       [Parameter(Mandatory=$true)][string]$Launcher,
       [Parameter(Mandatory=$true)][string]$ProfileDirectory,
@@ -14,7 +14,7 @@ $configuration = @{
   nous = @{ guest = $false }; onboarding = @{ run = $false }
   model = @{ default = 'offline-acceptance'; provider = 'offline-acceptance' }
   providers = @{ 'offline-acceptance' = @{
-    api = 'http://127.0.0.1:19997/v1'; name = 'Offline acceptance (no inference)'
+    api = 'http://127.0.0.1:19997/v1'; name = '离线验收（未调用模型）'
     api_mode = 'chat_completions'; key_env = 'ACCEPTANCE_ONLY_API_KEY'
     models = @{ 'offline-acceptance' = @{} }
   } }
