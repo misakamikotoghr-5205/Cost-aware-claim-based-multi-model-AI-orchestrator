@@ -53,6 +53,7 @@ const report = {
   screenshots: [], checks: [],
 }
 let application
+let nativeDialogProcess
 function checkpoint(phase) {
   report.phase = phase
   writeFileSync(join(output, 'native-desktop-report.json'), JSON.stringify(report, null, 2))
@@ -107,6 +108,9 @@ try {
   await openSettings.waitFor({ state: 'visible', timeout: 15_000 })
   await openSettings.click({ timeout: 5000 })
   await page.getByRole('button', { name: 'Close settings', exact: true }).waitFor({ state: 'visible', timeout: 15000 })
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click()
+  await page.getByPlaceholder('Search your themes or the VS Code Marketplace…').waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByText('Light', { exact: true }).first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.screenshot({ path: join(output, '03-windows-native-settings.png') })
   report.screenshots.push('03-windows-native-settings.png')
   report.checks.push('Native settings opened through its actual control')
@@ -115,16 +119,27 @@ try {
   if (process.platform === 'win32') {
     checkpoint('opening_actual_native_screen_dialog')
     const electronPid = await application.evaluate(() => process.pid)
-    const dialogProcess = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(ownDirectory, 'native-dialog.ps1'), '-ApplicationPid', String(electronPid)], { stdio: 'ignore' })
+    report.native_displays = await application.evaluate(({ screen }) => screen.getAllDisplays().map(display => ({
+      id: display.id, bounds: display.bounds, scaleFactor: display.scaleFactor,
+    })))
+    nativeDialogProcess = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(ownDirectory, 'native-dialog.ps1'), '-ApplicationPid', String(electronPid), '-DiagnosticsPath', join(output, 'native-dialog-report.json')], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let dialogMessages = ''
+    const rememberDialog = data => { dialogMessages = (dialogMessages + data.toString()).slice(-5000) }
+    nativeDialogProcess.stdout.on('data', rememberDialog)
+    nativeDialogProcess.stderr.on('data', rememberDialog)
     const dialogDone = new Promise((resolveDialog, rejectDialog) => {
-      dialogProcess.once('exit', code => code === 0 ? resolveDialog() : rejectDialog(new Error('Actual native source dialog selection failed')))
-      dialogProcess.once('error', rejectDialog)
+      nativeDialogProcess.once('exit', code => code === 0 ? resolveDialog() : rejectDialog(new Error('Actual native source dialog selection failed: ' + redact(dialogMessages))))
+      nativeDialogProcess.once('error', rejectDialog)
     })
+    dialogDone.catch(() => {})
     // Handle native consent as a real UI Automation click, not a stubbed API.
     const captureDone = page.evaluate(() => window.hermesDesktop.regionCapture.capture())
     // Mark the promise handled while the native dialog is still open.
     captureDone.catch(() => {})
-    await bounded(dialogDone, 40_000, 'Actual native screen consent')
+    await bounded(Promise.race([
+      dialogDone,
+      captureDone.then(result => { throw new Error('Native screen acquisition ended before source consent: ' + result.status + ': ' + (result.message || '')) }),
+    ]), 40_000, 'Actual native screen consent')
     checkpoint('dragging_actual_native_region_overlay')
     let viewport
     for (let tries = 0; tries < 100; tries++) {
@@ -172,6 +187,7 @@ try {
   process.exitCode = 1
 } finally {
   checkpoint('closing_actual_native_application')
+  if (nativeDialogProcess && nativeDialogProcess.exitCode === null) nativeDialogProcess.kill()
   if (application) {
     try {
       const page = application.windows()[0]
