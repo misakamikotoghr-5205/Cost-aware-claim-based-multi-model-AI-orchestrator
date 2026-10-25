@@ -108,6 +108,48 @@ def test_no_declared_identity_never_queries_or_uses_native_model_metadata():
     assert cloud.read_cloud_quota(instance)["accounts"] == []
 
 
+def test_cached_observations_age_without_requests_mutation_or_new_timestamps():
+    now = time.time()
+    calls = []
+    def read(account, model):
+        calls.append((account, model))
+        return snapshot(account, model, observed_at=now, max_age_seconds=10,
+                        reset_at=now+20 if model == "reset" else None)
+    cached = cloud.read_cloud_quota(core(settings(
+        one={"account":"subscription", "model":"*"},
+        two={"account":"subscription", "model":"reset"}), SimpleNamespace(snapshot=read)))
+    original = deepcopy(cached)
+    before = cloud.age_cloud_quota(cached, now+9)
+    assert before["state"] == "ready"
+    aged = cloud.age_cloud_quota(cached, now+10)
+    assert aged["state"] == "unknown"
+    assert all(window["state"] == "stale" for window in aged["accounts"][0]["windows"])
+    expired = cloud.age_cloud_quota(cached, now+20)
+    assert [window["state"] for window in expired["accounts"][0]["windows"]] == ["stale", "expired"]
+    assert cached == original and len(calls) == 2
+    assert expired["accounts"][0]["observed_at"] == original["accounts"][0]["observed_at"]
+    assert [window["observed_at"] for window in expired["accounts"][0]["windows"]] == [now, now]
+
+
+def test_cached_unknown_and_blocked_never_turn_ready_or_expired():
+    now = time.time()
+    cached = {"configured": True, "state": "unknown", "accounts": [{"state":"unknown",
+        "windows":[{"id":"unknown", "state":"unknown", "observed_at":now, "expires_at":now+1,
+                    "reset_at":now+1, "unknown_reason":"unavailable"},
+                   {"id":"blocked", "state":"blocked", "observed_at":now, "expires_at":now+1,
+                    "reset_at":now+1, "unknown_reason":"uncertain consumption"}]}]}
+    result = cloud.age_cloud_quota(cached,now+2)
+    assert [window["state"] for window in result["accounts"][0]["windows"]] == ["unknown","blocked"]
+    assert result["state"] == "unknown"
+
+
+def test_cached_partial_warning_survives_when_omitted_pools_cannot_be_seen():
+    cached = {"configured": True, "state": "partial", "unknown_reason":"Some configured pools were omitted.",
+              "accounts":[{"state":"ready", "windows":[{"state":"ready", "observed_at":100,
+                  "expires_at":200,"reset_at":None}]}]}
+    assert cloud.age_cloud_quota(cached,150)["state"] == "partial"
+
+
 def test_real_http_dashboard_reads_ledger_and_does_not_reserve_or_claim(tmp_path):
     token = "temporary-cloud-dashboard-owner-test-token"
     queue = CloudQueue(tmp_path / "queue.sqlite")

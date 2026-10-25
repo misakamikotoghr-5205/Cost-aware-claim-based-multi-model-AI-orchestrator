@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from copy import deepcopy
 from decimal import Decimal
 
 SOURCE = "fleet-ledger"
@@ -83,6 +84,52 @@ def _window(account, model, snapshot, now):
 def _aggregate(windows):
     ready = sum(window["state"] == "ready" for window in windows)
     return "ready" if ready == len(windows) and ready else "partial" if ready else "unknown"
+
+
+def age_cloud_quota(value, now):
+    """Age a cached cloud projection without I/O or advancing observation times.
+
+    An UNKNOWN or blocked window never becomes ready through time passage.
+    Existing aggregate warnings (for example omitted configured pools) cannot
+    disappear merely because every window that was returned is still fresh.
+    """
+    if _number(now) is None:
+        raise ValueError("Cloud quota cache requires a finite epoch time")
+    result = deepcopy(value)
+    states = {"unknown": 0, "partial": 1, "ready": 2}
+
+    def conservative(previous, computed):
+        return min((previous, computed), key=lambda state: states.get(state, 0)) if previous in states else "unknown"
+
+    windows = []
+    for account in result.get("accounts", []):
+        for window in account.get("windows", []):
+            state = window.get("state", "unknown")
+            if state not in {"unknown", "blocked"}:
+                reset, expires, observed = (_number(window.get(field))
+                                            for field in ("reset_at", "expires_at", "observed_at"))
+                if reset is not None and now >= reset:
+                    window["state"] = "expired"
+                    window["unknown_reason"] = "The cloud observation has reached its reset time."
+                elif state == "expired":
+                    pass  # A backwards clock cannot renew an expired observation.
+                elif observed is None or observed > now or expires is None:
+                    window["state"] = "unknown"
+                    window["unknown_reason"] = "The cached cloud observation has no valid freshness deadline."
+                elif now >= expires or state == "stale":
+                    window["state"] = "stale"
+                    window["unknown_reason"] = "The cached cloud observation is stale; refresh to obtain a new observation."
+                elif state != "ready":
+                    window["state"] = "unknown"
+                    window["unknown_reason"] = "The cached cloud observation state is invalid."
+            windows.append(window)
+        account["state"] = conservative(account.get("state"), _aggregate(account.get("windows", [])))
+        if account["state"] != "ready":
+            account["unknown_reason"] = "One or more cached cloud quota windows are unavailable, stale, expired or blocked."
+    result["state"] = conservative(result.get("state"), _aggregate(windows))
+    if result["state"] != "ready" and not result.get("unknown_reason"):
+        result["unknown_reason"] = "One or more cached cloud quota pools do not have a fresh usable observation."
+    return result
 
 
 def read_cloud_quota(core):
