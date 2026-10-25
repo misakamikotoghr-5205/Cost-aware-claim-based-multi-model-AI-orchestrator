@@ -300,13 +300,14 @@ class JudgeTests(unittest.TestCase):
         self.assertTrue(any("Single admitted shortlist candidate" in note for note in result.notes))
 
     def test_judge_focus_respects_admission_and_existing_expiry_order(self):
-        judge = OllamaLocalJudge(max_candidates=1)
+        judge = OllamaLocalJudge(max_candidates=2)
         opener = MagicMock()
         judge._opener = opener
         opener.open.return_value.__enter__.return_value = io.BytesIO(json.dumps({
             "response": '{"model_id":"soon-expiring"}', "done": True, "done_reason": "stop"}).encode())
         cards = [card("higher-score", capabilities={"reasoning": .85}, expires_at=NOW + 7200),
                  card("soon-expiring", capabilities={"reasoning": .8}, expires_at=NOW + 60),
+                 card("later-expiring", capabilities={"reasoning": .83}, expires_at=NOW + 600),
                  card("rejected-paid", billing_mode="paid_api"),
                  card("rejected-tools", metadata={"required_tools": ["unavailable-tool"]}),
                  card("rejected-quota", billing_mode="free", quota_remaining=0)]
@@ -315,11 +316,24 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(result.selected.model_id, "soon-expiring")
         payload = json.loads(opener.open.call_args.args[0].data)
         view = json.loads(payload["prompt"])
-        self.assertEqual([item["model_id"] for item in view["candidates"]], ["soon-expiring"])
-        self.assertEqual(set(view["scores"]), {"soon-expiring"})
+        self.assertEqual([item["model_id"] for item in view["candidates"]], ["soon-expiring", "later-expiring"])
+        self.assertEqual(set(view["scores"]), {"soon-expiring", "later-expiring"})
+        self.assertEqual(view["scope"]["candidates_omitted"], 1)
         for rejected in ["rejected-paid", "rejected-tools", "rejected-quota"]:
             self.assertIn(rejected, result.rejected)
             self.assertNotIn(rejected, payload["prompt"])
+
+    def test_one_candidate_limit_skips_inference_and_keeps_expiry_preference(self):
+        judge = OllamaLocalJudge(max_candidates=1)
+        cards = [card("higher-score", capabilities={"reasoning": .85}, expires_at=NOW + 7200),
+                 card("soon-expiring", capabilities={"reasoning": .8}, expires_at=NOW + 60)]
+        with patch.object(judge, "choose", side_effect=AssertionError("unneeded inference")) as choose:
+            result = ClientRouter(judge=judge).route(TaskCard("t", "task", "general"), cards, now=NOW)
+        self.assertEqual(result.ranking[0].agent, "higher-score")
+        self.assertEqual(result.selected.model_id, "soon-expiring")
+        self.assertEqual(len(result.candidates), 2)
+        choose.assert_not_called()
+        self.assertTrue(any("Judge candidate limit is one" in note for note in result.notes))
 
     def test_judge_view_limits_are_bounded_integers(self):
         for limits in [{"max_task_chars": 127}, {"max_task_chars": 2049}, {"max_task_chars": True},

@@ -31,9 +31,17 @@ not recreate it or import a repository fallback.
 The package installer verifies the archive, compatibility, hashes and paths,
 and copies only that package into the selected Hermes home. Installation does
 not silently enable Python plugins or start a worker. Enable through the native
-plugin controls, then reload/restart the native backend as indicated by the
-host. Already running downloads/worker polls receive cancellation at unload;
-an operation already executing may finish before shutdown. No background model
+plugin controls. On first installation or first Agent enablement, **restart the
+corresponding local native backend and reconnect to that local profile**: the
+running gateway mounts plugin REST routes at startup, so enabling Desktop alone
+does not make newly installed `/settings` or catalog `/models` endpoints live.
+The extension pages identify missing static entry routes and ask the user to
+enable **Agent** on the native Plugins page, restart the corresponding local
+backend and reconnect. A missing task, session or other dynamic resource retains
+its original error and is not presented as a restart issue. No extension
+automatically kills or restarts the backend; wait for active tasks to finish
+before restarting it. Already running downloads/worker polls receive cancellation
+at unload; an operation already executing may finish before shutdown. No background model
 scan or worker starts on package import, page load, or installation.
 
 ## Local state and authentication
@@ -129,6 +137,8 @@ Full admission, quota checks, deterministic scoring and expiry policy still run
 before this smaller view is constructed. If only one candidate remains in the
 admitted score/expiry shortlist, routing skips judge inference and records that
 fact in the receipt. Optional judging is reserved for a choice among candidates.
+Setting `max_candidates` to 1 also skips inference and preserves the existing
+deterministic score/expiry preference, even when the full shortlist is larger.
 
 Generation uses an explicit JSON Schema whose `model_id` enum contains only the
 visible candidates, and disables optional thinking for this short selection.

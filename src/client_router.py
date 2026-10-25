@@ -321,7 +321,7 @@ class ClientRouter:
             receipt.notes.append("Prefer soon-expiring quota among models within the configured score margin.")
         else:
             selected = ordered[0]
-        if self.judge is not None and len(shortlist) > 1:
+        if self.judge is not None and len(shortlist) > 1 and self.judge.max_candidates > 1:
             try:
                 chosen = self.judge.choose(task, shortlist, receipt.ranking)
                 selected = next(card for card in shortlist if card.model_id == chosen)
@@ -329,7 +329,9 @@ class ClientRouter:
             except Exception as error:
                 receipt.notes.append(f"Local judge unavailable or invalid ({type(error).__name__}); deterministic selection retained.")
         elif self.judge is not None:
-            receipt.notes.append("Single admitted shortlist candidate; local judge skipped.")
+            receipt.notes.append("Single admitted shortlist candidate; local judge skipped."
+                                 if len(shortlist) == 1 else
+                                 "Judge candidate limit is one; local judge skipped and deterministic shortlist preference retained.")
         receipt.selected = selected
         receipt.candidates = [selected] + [card for card in ordered if card.model_id != selected.model_id]
         receipt.notes.append("Scores use the existing local ScoringEngine; shared quota still requires an atomic reservation.")

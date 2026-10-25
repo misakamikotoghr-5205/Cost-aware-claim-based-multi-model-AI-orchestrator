@@ -182,11 +182,11 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
     <SegmentedControl<Kind> value={kind} options={[{ id: 'auto', label: '自动识别' }, { id: 'document', label: 'Word / 文档' },
       { id: 'spreadsheet', label: 'Excel / 表格' }, { id: 'unknown', label: '其他' }]} onChange={value => { invalidate(); setKind(value) }} />
     <p>{capture.appContext?.windowTitle || capture.appContext?.sourceName || '系统未提供应用标题，可手动选择环境。'}</p>
-    <label className="pointer-label">关键词<Input value={keywords} onChange={event => editKeywords(event.target.value)} placeholder="例如：整理、公式、翻译、检查" /></label>
+    <label className="pointer-label">关键词<Input aria-label="关键词" value={keywords} onChange={event => editKeywords(event.target.value)} placeholder="例如：整理、公式、翻译、检查" /></label>
     <div className="pointer-chips">{['整理', '检查', '翻译', '解释', '公式', '格式'].map(keyword => <Button key={keyword} variant="outline" size="xs"
       onClick={() => editKeywords([keywords, keyword].filter(Boolean).join(' '))}>{keyword}</Button>)}</div>
     <div className="pointer-row"><Button disabled={!region || busy} onClick={() => propose()}> {session ? '追加关键词 / 换一批' : '生成多个候选'} </Button></div>
-    <label className="pointer-label">选区原文 / 表格数据（可粘贴）<Textarea value={selectedText} disabled={busy} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction(''); if (busy) setSession(null); setBusy(false) }} placeholder="不发送图片时，请在这里粘贴要处理的原文或表格内容。" /></label>
+    <label className="pointer-label">选区原文 / 表格数据（可粘贴）<Textarea aria-label="选区原文 / 表格数据（可粘贴）" value={selectedText} disabled={busy} onChange={event => { gate.current.next(); setSelectedText(event.target.value); setDraft(''); setSelectedAction(''); if (busy) setSession(null); setBusy(false) }} placeholder="不发送图片时，请在这里粘贴要处理的原文或表格内容。" /></label>
     <div className="pointer-row"><Switch aria-label="附上所选区域图片" checked={attachImage} onCheckedChange={enabled => {
       gate.current.next(); setAttachImage(enabled)
       if (busy) { setBusy(false); setSession(null); setDraft(''); setSelectedAction('') }
@@ -197,7 +197,7 @@ export function PointerPane({ ctx }: { ctx: PluginContext }) {
     {session?.question && <p role="status">{session.question}</p>}
     {session && <div className="pointer-intents">{session.candidates.map(candidate => <Button key={candidate.action_id} variant={selectedAction === candidate.action_id ? 'default' : 'secondary'} aria-pressed={selectedAction === candidate.action_id} disabled={busy || dirty}
       onClick={() => choose(candidate)}>{candidate.label} — {candidate.description}</Button>)}</div>}
-    {draft && <><label className="pointer-label">聊天草稿预览<Textarea value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} /></label>
+    {draft && <><label className="pointer-label">聊天草稿预览<Textarea aria-label="聊天草稿预览" value={draft} disabled={busy} onChange={event => setDraft(event.target.value)} /></label>
       <Button onClick={insertDraft} disabled={busy || dirty || (!attachImage && !selectedText.trim())}>确认加入聊天草稿</Button><p>请提供选区原文或明确勾选附图，确保会话模型能看到要处理的内容。此扩展不会自动发送聊天。</p></>}
     {notice && <p role="status">{notice}</p>}
     </>}
