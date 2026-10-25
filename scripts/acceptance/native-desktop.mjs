@@ -6,7 +6,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { auditNativeCapture, provenance, verifyBrand, verifyCompact } from './misaka-final.mjs'
+import { auditNativeCapture, provenance, verifyBrand, verifyCompact, verifyDashboard } from './misaka-final.mjs'
 
 const { values } = parseArgs({ options: {
   upstream: { type: 'string' }, 'hermes-home': { type: 'string' }, output: { type: 'string' },
@@ -118,7 +118,7 @@ try {
   // Wait for the actual backend boot to settle; no fake boot or fixture server.
   await page.waitForFunction(() => {
     const text = document.body.textContent || ''
-    return /provider|API key|Sign in|ready|Ready/.test(text) && !/Starting Hermes/.test(text)
+    return /provider|API key|Sign in|ready|Ready|提供方|API 密钥|登录|就绪/.test(text) && !/Starting Hermes|正在启动 MISAKA/.test(text)
   }, null, { timeout: 180_000 })
   checkpoint('checking_authenticated_native_config')
   await bounded(page.evaluate(async () => {
@@ -135,7 +135,7 @@ try {
   report.identity = await verifyBrand(application, page)
   report.checks.push('Actual application name and native owner title equal MISAKA AGENT; upstream update gates protect this build')
 
-  const chooseLater = page.getByRole('button', { name: "I'll choose a provider later", exact: true })
+  const chooseLater = page.getByRole('button', { name: /^(I'll choose a provider later|稍后再选择提供方)$/ })
   await chooseLater.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {})
   if (await chooseLater.isVisible().catch(() => false)) {
     await chooseLater.click()
@@ -145,18 +145,24 @@ try {
   await page.screenshot({ path: join(output, '02-windows-native-chat.png') })
   report.screenshots.push('02-windows-native-chat.png')
 
-  const openSettings = page.getByRole('button', { name: 'Open settings', exact: true })
+  const openSettings = page.getByRole('button', { name: /^(Open settings|打开设置)$/ })
   await openSettings.waitFor({ state: 'visible', timeout: 15_000 })
   await openSettings.click({ timeout: 5000 })
-  await page.getByRole('button', { name: 'Close settings', exact: true }).waitFor({ state: 'visible', timeout: 15000 })
-  await page.getByRole('button', { name: 'Appearance', exact: true }).click()
-  await page.getByRole('button', { name: 'Theme', exact: true }).click()
-  await page.getByPlaceholder('Search your themes or the VS Code Marketplace…').waitFor({ state: 'visible', timeout: 15_000 })
-  await page.getByText('Light', { exact: true }).first().waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByRole('button', { name: /^(Close settings|关闭设置)$/ }).waitFor({ state: 'visible', timeout: 15000 })
+  await page.getByRole('button', { name: /^(Appearance|外观)$/ }).click()
+  await page.getByRole('button', { name: /^(Theme|主题)$/ }).click()
+  await page.getByPlaceholder(/^(Search your themes or the VS Code Marketplace…|搜索本地主题或 VS Code 市场…)$/).waitFor({ state: 'visible', timeout: 15_000 })
+  await page.getByText(/^(Light|明亮)$/).first().waitFor({ state: 'visible', timeout: 15_000 })
   await page.screenshot({ path: join(output, '03-windows-native-settings.png') })
   report.screenshots.push('03-windows-native-settings.png')
   report.checks.push('Native settings opened through its actual control')
-  await page.getByRole('button', { name: 'Close settings', exact: true }).click()
+  await page.getByRole('button', { name: /^(Close settings|关闭设置)$/ }).click()
+  checkpoint('verifying_real_chinese_quota_dashboard')
+  await page.getByRole('button', { name: /^新建会话/ }).first().waitFor({ state: 'visible', timeout: 15_000 })
+  report.renderer_language = await page.evaluate(() => document.documentElement.lang)
+  report.dashboard = await verifyDashboard(page, output)
+  report.screenshots.push('03a-windows-native-quota-dashboard.png')
+  report.checks.push('Chinese native shell and installed core Desktop quota overview show actual account records; real refresh keeps unavailable offline-provider balances unknown')
   captureAudit = await auditNativeCapture(application)
 
   if (process.platform === 'win32') {

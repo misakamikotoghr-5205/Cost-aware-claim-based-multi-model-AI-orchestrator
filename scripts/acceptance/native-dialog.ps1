@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][int]$ApplicationPid,
+﻿param([Parameter(Mandatory=$true)][int]$ApplicationPid,
       [Parameter(Mandatory=$true)][string]$DiagnosticsPath,
       [ValidateRange(3,60)][int]$DeadlineSeconds = 60)
 $ErrorActionPreference = 'Stop'
@@ -46,7 +46,7 @@ public static class MisakaDialogInput {
     uint dialogPid,buttonPid,ownerPid;
     GetWindowThreadProcessId(dialog,out dialogPid); GetWindowThreadProcessId(button,out buttonPid); GetWindowThreadProcessId(owner,out ownerPid);
     if(dialogPid!=expectedPid || buttonPid!=expectedPid || ownerPid!=expectedPid || owner==IntPtr.Zero ||
-      Text(dialog,true)!="#32770" || Text(dialog,false)!="Select a screen" || Text(button,true)!="Button" ||
+      Text(dialog,true)!="#32770" || (Text(dialog,false)!="Select a screen" && Text(dialog,false)!="选择屏幕") || Text(button,true)!="Button" ||
       Text(button,false)!=expectedCaption || !IsChild(dialog,button) || !IsWindowVisible(dialog) ||
       !IsWindowEnabled(dialog) || !IsWindowVisible(button) || !IsWindowEnabled(button))
       throw new InvalidOperationException("The actual native source control changed before input.");
@@ -77,13 +77,13 @@ public static class MisakaDialogInput {
     # UIA RootElement omitted a proven visible Windows TaskDialog in the actual
     # runner. Enumerate real HWNDs instead, then click its real source button.
     $all = @([MisakaDialogDesktop]::Snapshot([uint32]$ApplicationPid))
-    $dialogs = @($all | Where-Object { -not $_.child -and $_.pid -eq $ApplicationPid -and $_.visible -and $_.enabled -and $_.class_name -eq '#32770' -and $_.title -eq 'Select a screen' })
+    $dialogs = @($all | Where-Object { -not $_.child -and $_.pid -eq $ApplicationPid -and $_.visible -and $_.enabled -and $_.class_name -eq '#32770' -and $_.title -in @('Select a screen','选择屏幕') })
     foreach ($window in $dialogs) {
       $owner = @($all | Where-Object { $_.hwnd -eq $window.owner -and $_.pid -eq $ApplicationPid })
       if ($owner.Count -ne 1) { continue }
       $buttons = @($all | Where-Object { $_.child -and $_.pid -eq $ApplicationPid -and $_.class_name -eq 'Button' -and $_.visible -and $_.enabled -and [MisakaDialogInput]::IsChild([IntPtr]$window.hwnd,[IntPtr]$_.hwnd) })
-      if (@($buttons | Where-Object { $_.title -eq 'Cancel' }).Count -ne 1) { continue }
-      $source = @($buttons | Where-Object { $_.title -match '^(Entire screen|Screen(?:\s|\d).*|Display(?:\s|\d).*)$' })
+      if (@($buttons | Where-Object { $_.title -in @('Cancel','取消') }).Count -ne 1) { continue }
+      $source = @($buttons | Where-Object { $_.title -match '^(Entire screen|Screen(?:\s|\d).*|Display(?:\s|\d).*|屏幕 [1-9]\d*)$' })
       if ($source.Count -lt 1) { continue }
       $button = $source[0]
       Save-DesktopDiagnostic

@@ -193,6 +193,37 @@ async function realCompactCrop(application, compact, output) {
   }
 }
 
+export async function verifyDashboard(main, output) {
+  await main.getByRole('button', { name: /^(Capabilities|技能与工具)$/ }).click()
+  await main.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
+  await main.getByRole('button', { name: '云端本地协同', exact: true }).filter({ hasText: '云端本地协同' }).click()
+  const desktop = main.getByRole('switch', { name: /^(Desktop|桌面): 云端本地协同$/ })
+  await desktop.check()
+  assert.equal(await desktop.getAttribute('aria-checked'), 'true')
+  await main.getByRole('button', { name: /^(Close|关闭)$/ }).last().click()
+  await main.getByRole('button', { name: '额度总览', exact: true }).click()
+  const dashboard = main.getByRole('main', { name: 'MISAKA AGENT 额度总览', exact: true })
+  await dashboard.getByRole('heading', { name: '账号用量', exact: true }).waitFor({ state: 'visible' })
+  const cards = dashboard.locator('.misaka-account-grid .misaka-quota-card')
+  await cards.first().waitFor({ state: 'visible', timeout: 30_000 })
+  const before = await dashboard.locator('.misaka-overview time').textContent()
+  await dashboard.getByRole('button', { name: '读取最新额度', exact: true }).click()
+  const refreshed = await until(() => dashboard.locator('.misaka-overview time').textContent(),
+    value => Boolean(value) && value !== '未提供' && value !== before, 'Actual native quota refresh did not update its observation time', 30_000)
+  await dashboard.getByRole('button', { name: '读取最新额度', exact: true }).waitFor({ state: 'visible' })
+  const states = await cards.locator('.misaka-badge').evaluateAll(elements => elements.map(element => element.getAttribute('data-state')))
+  assert(states.length >= 1)
+  assert(states.every(state => state === 'unknown'), 'The offline test endpoint must not fabricate a provider balance')
+  assert.equal(await cards.locator('progress').count(), 0)
+  const reasons = await cards.locator('.misaka-reason').allTextContents()
+  assert(reasons.length >= 1 && reasons.every(reason => reason.trim()))
+  await main.screenshot({ path: join(output, '03a-windows-native-quota-dashboard.png') })
+  await main.getByRole('button', { name: /^新建会话/ }).first().click()
+  return { actual_core_desktop_enabled: true, real_refresh_completed: true, refreshed_time: refreshed,
+    account_states: states, unknown_reasons: reasons, fabricated_progress_bars: 0,
+    real_provider_balance: 'not_tested_no_account_credentials', offline_acceptance_profile: true }
+}
+
 export async function verifyCompact(application, main, output, ownerId) {
   await main.getByRole('button', { name: /^(Capabilities|技能与工具)$/ }).click()
   await main.getByRole('button', { name: /^(Plugins|插件)$/ }).first().click()
