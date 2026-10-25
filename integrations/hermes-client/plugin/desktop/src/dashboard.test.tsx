@@ -1,7 +1,7 @@
 import { createElement } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-const mocks = vi.hoisted(() => ({ navigate: vi.fn(), ensure: vi.fn(async () => undefined), pick: vi.fn(async () => '/snapshots/usage.json') }))
+const mocks = vi.hoisted(() => ({ navigate: vi.fn(), ensure: vi.fn(async () => undefined), open: vi.fn(async (_route: any) => undefined), pick: vi.fn(async () => '/snapshots/usage.json') }))
 vi.mock('@hermes/plugin-sdk', async () => {
   const React = await import('react')
   return { Button: ({ variant, size, children, ...props }: any) => React.createElement('button', props, children),
@@ -9,8 +9,9 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Loader: ({ label }: any) => React.createElement('div', { role: 'status' }, label),
     ErrorState: ({ title, description, children }: any) => React.createElement('div', { role: 'alert' }, title, description, children),
     ConfirmDialog: () => null, Switch: () => null, ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav',
-    host: { navigate: mocks.navigate, ensureAgent: mocks.ensure } }
+    host: { navigate: mocks.navigate, ensureAgent: mocks.ensure, openLocalProviderSettings: mocks.open } }
 })
+import { host } from '@hermes/plugin-sdk'
 import { DashboardPage, type DashboardSnapshot } from './dashboard'
 import plugin from './plugin'
 
@@ -29,7 +30,7 @@ function snapshot(accounts = [account()]): DashboardSnapshot {
     cloud: { configured: false, state: 'unknown', source: 'fleet-ledger', accounts: [], unknown_reason: '尚未配置私网调度服务。' },
     node: { execution_location: 'this_backend_host', platform: 'linux', running: false, status: 'stopped' } }
 }
-beforeEach(() => { mocks.navigate.mockClear(); mocks.ensure.mockClear(); mocks.pick.mockClear() })
+beforeEach(() => { mocks.navigate.mockClear(); mocks.ensure.mockClear(); mocks.pick.mockClear(); mocks.open.mockReset(); mocks.open.mockResolvedValue(undefined); (host as any).openLocalProviderSettings = mocks.open })
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 it('reads cached records locally and keeps unknown quota distinct from a real zero or provider balance', async () => {
@@ -96,10 +97,53 @@ it('opens native account settings on the selected local source without manufactu
   await screen.findByText('尚无可显示的账号用量')
   expect(screen.queryByRole('progressbar')).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: '打开原生账号设置' }))
-  await waitFor(() => expect(mocks.navigate).toHaveBeenCalledWith('/settings?tab=providers&pview=accounts'))
-  expect(mocks.ensure).toHaveBeenCalledWith('local', 'work')
-  expect(mocks.ensure.mock.invocationCallOrder[0]).toBeLessThan(mocks.navigate.mock.invocationCallOrder[0])
+  await waitFor(() => expect(mocks.open).toHaveBeenCalledWith({ connectionId: 'local', profile: 'work', signal: expect.any(AbortSignal) }))
+  expect(mocks.navigate).not.toHaveBeenCalled()
+  expect(mocks.ensure).not.toHaveBeenCalled()
   expect(api).toHaveBeenCalledTimes(1)
+})
+
+it('older clients without explicit native settings scope show an upgrade action without ambient navigation', async () => {
+  delete (host as any).openLocalProviderSettings
+  ;(window as any).hermesDesktop = { api: vi.fn(async () => snapshot([])) }
+  render(createElement(DashboardPage, { ctx: context('work') }))
+  fireEvent.click(await screen.findByRole('button', { name: '打开原生账号设置' }))
+  expect((await screen.findByRole('alert')).textContent).toContain('请升级 MISAKA AGENT 客户端后重试')
+  expect(mocks.navigate).not.toHaveBeenCalled(); expect(mocks.ensure).not.toHaveBeenCalled()
+})
+
+it('changing the local configuration cancels pending native account navigation', async () => {
+  let finish: () => void = () => undefined
+  mocks.open.mockImplementationOnce(async () => new Promise<void>(resolve => { finish = resolve }))
+  ;(window as any).hermesDesktop = { api: vi.fn(async () => snapshot([])) }
+  render(createElement(DashboardPage, { ctx: context() }))
+  fireEvent.click(await screen.findByRole('button', { name: '打开原生账号设置' }))
+  const signal = mocks.open.mock.calls[0][0].signal as AbortSignal
+  expect(signal.aborted).toBe(false)
+  fireEvent.change(screen.getByRole('textbox', { name: '额度本机配置' }), { target: { value: 'work' } })
+  fireEvent.click(screen.getByRole('button', { name: '连接此本机配置' }))
+  expect(signal.aborted).toBe(true)
+  await act(async () => finish())
+  expect(mocks.navigate).not.toHaveBeenCalled()
+})
+
+it('partial cloud accounts retain their valid windows while blocked and unknown windows stay unmetered', async () => {
+  const data = snapshot([])
+  data.cloud = { configured: true, state: 'partial', source: 'fleet-ledger', unknown_reason: '部分配额仍待核对。', accounts: [
+    { ...account('部分可用账本'), state: 'partial', windows: [account().windows[0],
+      { ...account().windows[0], id: 'unknown-window', label: '待核对窗口', state: 'unknown' }] },
+    { ...account('冻结账本'), state: 'blocked', unknown_reason: '上次任务的用量尚未核对。' }
+  ] }
+  ;(window as any).hermesDesktop = { api: vi.fn(async () => data) }
+  render(createElement(DashboardPage, { ctx: context() }))
+  const partial = await screen.findByRole('article', { name: '部分可用账本 额度' })
+  expect(within(partial).getAllByRole('progressbar')).toHaveLength(1)
+  expect(within(partial).getByText('剩余 40%')).toBeTruthy()
+  expect(within(within(partial).getByRole('region', { name: '待核对窗口' })).queryByRole('progressbar')).toBeNull()
+  const blocked = screen.getByRole('article', { name: '冻结账本 额度' })
+  expect(within(blocked).getByText('暂不可调度')).toBeTruthy()
+  expect(within(blocked).queryByRole('progressbar')).toBeNull()
+  expect(within(blocked).getByText('上次任务的用量尚未核对。')).toBeTruthy()
 })
 
 it('imports only an explicitly selected JSON with the user supplied collection time', async () => {
