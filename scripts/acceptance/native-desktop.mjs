@@ -19,6 +19,9 @@ const requireUpstream = createRequire(join(upstream, 'package.json'))
 const { _electron } = requireUpstream('@playwright/test')
 const executablePath = requireUpstream('electron')
 const desktopRoot = join(upstream, 'apps/desktop')
+const nativeLauncher = (process.platform === 'win32' ? ['hermes.exe', 'hermes.cmd'] : ['hermes'])
+  .map(name => join(upstream, '.hermes/bin', name)).find(candidate => existsSync(candidate))
+assert(nativeLauncher, 'The actual prepared installation launcher is missing')
 const ownDirectory = dirname(fileURLToPath(import.meta.url))
 const userData = join(profile, 'acceptance-electron-user-data')
 mkdirSync(userData, { recursive: true })
@@ -36,8 +39,9 @@ Object.assign(env, {
   HERMES_HOME: profile, HERMES_RUNTIME_DIR: join(profile, 'tools'),
   HERMES_DESKTOP_USER_DATA_DIR: userData,
   HERMES_DESKTOP_HERMES_ROOT: upstream,
+  HERMES_DESKTOP_HERMES: nativeLauncher,
   HERMES_DESKTOP_APP_NAME: `HermesAcceptance-${Date.now()}`,
-  HERMES_DESKTOP_IGNORE_EXISTING: '1', HERMES_DESKTOP_ISOLATED_BACKEND: '1',
+  HERMES_DESKTOP_ISOLATED_BACKEND: '1',
   HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1', HERMES_DESKTOP_SKIP_PROTOCOL_REGISTRATION: '1',
 })
 const report = {
@@ -76,13 +80,13 @@ try {
     const text = document.body.textContent || ''
     return /provider|API key|Sign in|ready|Ready/.test(text) && !/Starting Hermes/.test(text)
   }, null, { timeout: 180_000 })
-  checkpoint('checking_authenticated_native_status')
+  checkpoint('checking_authenticated_native_config')
   await bounded(page.evaluate(async () => {
-    const status = await window.hermesDesktop.api({ path: '/api/status', method: 'GET',
+    const status = await window.hermesDesktop.api({ path: '/api/config', method: 'GET',
       connectionId: 'local', profile: 'default', priority: 'foreground' })
-    if (!status || typeof status !== 'object') throw new Error('Real authenticated native status API did not respond')
-  }), 90_000, 'Real authenticated native status API')
-  report.checks.push('Real authenticated native status API responded through the actual preload transport')
+    if (!status || typeof status !== 'object') throw new Error('Real authenticated native config API did not respond')
+  }), 90_000, 'Real authenticated native config API')
+  report.checks.push('Real authenticated native config API responded through the actual preload transport')
   await page.screenshot({ path: join(output, '01-windows-native-first-run.png') })
   report.screenshots.push('01-windows-native-first-run.png')
   report.checks.push('Real native Electron renderer booted with isolated no-account profile')
@@ -90,27 +94,23 @@ try {
   report.checks.push('Patched native region-capture capability exposed by actual preload')
 
   const chooseLater = page.getByRole('button', { name: "I'll choose a provider later", exact: true })
+  await chooseLater.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {})
   if (await chooseLater.isVisible().catch(() => false)) {
     await chooseLater.click()
     await chooseLater.waitFor({ state: 'hidden', timeout: 15_000 })
-    await page.screenshot({ path: join(output, '02-windows-native-chat.png') })
-    report.screenshots.push('02-windows-native-chat.png')
     report.checks.push('Native choose-provider-later control exposes the real chat without an account')
   }
+  await page.screenshot({ path: join(output, '02-windows-native-chat.png') })
+  report.screenshots.push('02-windows-native-chat.png')
 
   const openSettings = page.getByRole('button', { name: 'Open settings', exact: true })
-  if (await openSettings.isVisible().catch(() => false)) {
-    try {
-      await openSettings.click({ timeout: 5000 })
-      await page.getByRole('button', { name: 'Close settings', exact: true }).waitFor({ state: 'visible', timeout: 15000 })
-      await page.screenshot({ path: join(output, '03-windows-native-settings.png') })
-      report.screenshots.push('03-windows-native-settings.png')
-      report.checks.push('Native settings opened through its actual control')
-      await page.getByRole('button', { name: 'Close settings', exact: true }).click()
-    } catch {
-      report.settings = 'blocked_by_first_run_onboarding'
-    }
-  }
+  await openSettings.waitFor({ state: 'visible', timeout: 15_000 })
+  await openSettings.click({ timeout: 5000 })
+  await page.getByRole('button', { name: 'Close settings', exact: true }).waitFor({ state: 'visible', timeout: 15000 })
+  await page.screenshot({ path: join(output, '03-windows-native-settings.png') })
+  report.screenshots.push('03-windows-native-settings.png')
+  report.checks.push('Native settings opened through its actual control')
+  await page.getByRole('button', { name: 'Close settings', exact: true }).click()
 
   if (process.platform === 'win32') {
     checkpoint('opening_actual_native_screen_dialog')
