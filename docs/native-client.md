@@ -1,11 +1,20 @@
-# Full native Hermes client and separate extension packages
+# MISAKA AGENT native client and separate extension packages
 
-The native client is the **complete upstream Hermes Electron/React application**,
-not the earlier Tk form launcher. It keeps Hermes chat and streaming tools,
+MISAKA AGENT is based on the **complete upstream Hermes Electron/React application**.
+It provides its own application identity, icons and welcome screen while keeping chat and streaming tools,
 conversation history, Skills/Hub, MCP and its OAuth flows, model/provider setup,
 API keys/OAuth, profiles, file/browser panes, voice, and local/SSH/URL/Cloud
 connections. The Orchestrator is an additive native plugin. Provider credentials
 continue to belong to Hermes; the package tools never copy them or log in.
+
+The default launcher uses `~/.misaka-agent` and `~/.cache/misaka-agent`, while
+honoring an explicit `HERMES_HOME` or `--hermes-home`. Each native patch set has
+its own cache directory, so upgrading does not reset an older source checkout.
+An explicitly supplied `--upstream` remains protected by exact patch checks.
+Native launch binds the launcher returned by the successful runtime probe.
+
+See [desktop identity](misaka-branding.md), [quota Dashboard](quota-dashboard.md)
+and [compact smart pointer](smart-pointer.md) for the integrated interface.
 
 ## Exact upstream base
 
