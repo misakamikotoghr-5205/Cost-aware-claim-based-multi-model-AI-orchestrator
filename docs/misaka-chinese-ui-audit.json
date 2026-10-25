@@ -1,8 +1,8 @@
 {
   "upstream_commit": "4dcef215cfe41bd2d02c2d1dad6e257a18101216",
   "requires_previous_patches": "0001–0009",
-  "patch_sha256": "68ed2d1d9260cd95dab9e39d38bf15feab2b63ba140cc6c8c5a3dbf39a74cafb",
-  "patched_tree": "c5b5bdd309d1c71ad9a865ad438fd240df9f7778",
+  "patch_sha256": "29a1d092d741d685100a6e064667882a74768c0551c378341b7ea64fb75d972e",
+  "patched_tree": "a2b816b5786cb77515b4c37702660104b213da24",
   "source_checks": {
     "patch_forward_and_reverse": true,
     "english_leaves": 5408,
@@ -14,7 +14,9 @@
     "electron_menu_capture_recovery_tests": 35,
     "all_locale_overlay_ratchet_tests": 2,
     "settings_behavior_and_provider_locale_tests": 10,
-    "media_reference_and_extra_controls_regression_tests": 35
+    "media_reference_and_extra_controls_regression_tests": 35,
+    "tray_behavior_tests": 9,
+    "native_uninstall_unit_tests": 19
   },
   "full_native_build_or_real_GUI_in_this_check": false
 }
