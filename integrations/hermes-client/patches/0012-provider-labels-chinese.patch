@@ -1,0 +1,757 @@
+diff --git a/apps/desktop/src/app/chat/composer/model-pill.tsx b/apps/desktop/src/app/chat/composer/model-pill.tsx
+index ab93fb8d..1761d5ee 100644
+--- a/apps/desktop/src/app/chat/composer/model-pill.tsx
++++ b/apps/desktop/src/app/chat/composer/model-pill.tsx
+@@ -53,7 +53,8 @@ export function ModelPill({
+   disabled: boolean
+   model: ChatBarState['model']
+ }) {
+-  const copy = useI18n().t.shell.statusbar
++  const { locale, t } = useI18n()
++  const copy = t.shell.statusbar
+   // Two return branches below, one handle: only ever one of them mounts.
+   const tourMarker = useTourMarker('model-pill')
+   const view = useSessionView()
+@@ -170,7 +171,7 @@ export function ModelPill({
+     : PILL
+ 
+   const baseTitle = currentProvider
+-    ? copy.modelTitle(providerDisplayName(currentProvider), currentModel || copy.modelNone)
++    ? copy.modelTitle(providerDisplayName(currentProvider, locale), currentModel || copy.modelNone)
+     : copy.switchModel
+ 
+   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
+diff --git a/apps/desktop/src/app/settings/model-settings.tsx b/apps/desktop/src/app/settings/model-settings.tsx
+index cdfde0f7..02e30efa 100644
+--- a/apps/desktop/src/app/settings/model-settings.tsx
++++ b/apps/desktop/src/app/settings/model-settings.tsx
+@@ -33,7 +33,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
+ import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
+ import { isSubmitEnter } from '@/lib/ime'
+ import { catalogProviderMatches, findCatalogProvider } from '@/lib/model-options'
+-import { composerServiceTier } from '@/lib/model-status-label'
++import { composerServiceTier, providerDisplayName } from '@/lib/model-status-label'
+ import { cn } from '@/lib/utils'
+ import { showLargeModelNotice } from '@/store/agent-notices'
+ import { $customModels, withCustomModels } from '@/store/custom-models'
+@@ -1098,7 +1098,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
+                   <SelectContent>
+                     {mainProviderOptions.map(provider => (
+                       <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+-                        {provider.name}
++                        {providerDisplayName(provider.slug, locale, provider.name)}
+                       </SelectItem>
+                     ))}
+                   </SelectContent>
+@@ -1145,7 +1145,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
+                     </div>
+                   ) : (
+                     <Button onClick={startProviderSetup} size="sm" variant="textStrong">
+-                      {m.setUpProvider(selectedProviderRow?.name ?? m.setupProviderFallback)}
++                      {m.setUpProvider(selectedProviderRow ? providerDisplayName(selectedProviderRow.slug, locale, selectedProviderRow.name) : m.setupProviderFallback)}
+                     </Button>
+                   )
+                 ) : (
+@@ -1179,11 +1179,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
+             <p className="mt-2 text-xs text-muted-foreground">
+               {locale === 'zh'
+                 ? selectedProviderRow.auth_type === 'api_key'
+-                  ? `${selectedProviderRow.name} 需要 API 密钥，设置后即可选择模型。`
+-                  : `${selectedProviderRow.name} 通过浏览器登录，MISAKA AGENT 会为你完成登录流程。`
++                  ? `${providerDisplayName(selectedProviderRow.slug, locale, selectedProviderRow.name)} 需要 API 密钥，设置后即可选择模型。`
++                  : `${providerDisplayName(selectedProviderRow.slug, locale, selectedProviderRow.name)} 通过浏览器登录，MISAKA AGENT 会为你完成登录流程。`
+                 : selectedProviderRow.auth_type === 'api_key'
+-                  ? `${selectedProviderRow.name} needs an API key — set it up to choose a model.`
+-                  : `${selectedProviderRow.name} signs in through your browser — MISAKA AGENT runs the flow for you.`}
++                  ? `${providerDisplayName(selectedProviderRow.slug, locale, selectedProviderRow.name)} needs an API key — set it up to choose a model.`
++                  : `${providerDisplayName(selectedProviderRow.slug, locale, selectedProviderRow.name)} signs in through your browser — MISAKA AGENT runs the flow for you.`}
+             </p>
+           )}
+           {config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported) && (
+@@ -1299,7 +1299,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
+                               <SelectContent>
+                                 {providerOptions.map(provider => (
+                                   <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
+-                                    {provider.name}
++                                    {providerDisplayName(provider.slug, locale, provider.name)}
+                                   </SelectItem>
+                                 ))}
+                               </SelectContent>
+@@ -1512,7 +1512,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
+ 
+                           return (
+                             <SelectItem key={slug} value={slug}>
+-                              {provider?.name || slug}
++                              {provider ? providerDisplayName(slug, locale, provider.name || slug) : slug}
+                             </SelectItem>
+                           )
+                         })}
+@@ -1600,7 +1600,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
+ 
+                         return (
+                           <SelectItem key={slug} value={slug}>
+-                            {provider?.name || slug}
++                            {provider ? providerDisplayName(slug, locale, provider.name || slug) : slug}
+                           </SelectItem>
+                         )
+                       })}
+diff --git a/apps/desktop/src/app/settings/providers-settings.tsx b/apps/desktop/src/app/settings/providers-settings.tsx
+index 9948342a..231ff7ea 100644
+--- a/apps/desktop/src/app/settings/providers-settings.tsx
++++ b/apps/desktop/src/app/settings/providers-settings.tsx
+@@ -269,9 +269,9 @@ function ConnectedProviderRow({
+   onTerminalDisconnect: (provider: OAuthProvider) => void
+   provider: OAuthProvider
+ }) {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const copy = t.settings.providers
+-  const title = providerTitle(provider)
++  const title = providerTitle(provider, locale)
+   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
+   // Hermes can clear this provider's creds via the API.
+   const canDisconnect = provider.disconnectable ?? provider.flow !== 'external'
+@@ -470,7 +470,7 @@ export function ProvidersSettings({
+       return
+     }
+ 
+-    const name = providerTitle(provider)
++    const name = providerTitle(provider, locale)
+ 
+     const ok = await confirm({
+       confirmLabel: t.settings.providers.disconnect,
+@@ -493,7 +493,7 @@ export function ProvidersSettings({
+   }
+ 
+   async function handleDisconnect(provider: OAuthProvider) {
+-    const name = providerTitle(provider)
++    const name = providerTitle(provider, locale)
+ 
+     const ok = await confirm({
+       confirmLabel: t.settings.providers.disconnect,
+diff --git a/apps/desktop/src/app/shell/model-catalog-menu.test.tsx b/apps/desktop/src/app/shell/model-catalog-menu.test.tsx
+index b34f3217..4652b6ec 100644
+--- a/apps/desktop/src/app/shell/model-catalog-menu.test.tsx
++++ b/apps/desktop/src/app/shell/model-catalog-menu.test.tsx
+@@ -16,6 +16,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
+ 
+ import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
+ import { registry } from '@/contrib/registry'
++import { I18nProvider } from '@/i18n'
+ import { queryClient } from '@/lib/query-client'
+ import { $favoriteModels, favoriteModelKey, toggleFavoriteModel } from '@/store/favorite-models'
+ import { $localModelsEnabled } from '@/store/local-models-flag'
+@@ -285,7 +286,7 @@ describe('the reasoning-effort badge (#51833)', () => {
+ 
+ // A minimal controller — these tests are about the CATALOG's own behaviour
+ // (what it lists, what it offers), not about what any host does with a pick.
+-function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
++function renderMenu(current: Partial<ModelMenuController['current']> = {}, locale = 'en') {
+   const select = vi.fn()
+ 
+   const controller: ModelMenuController = {
+@@ -300,6 +301,7 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
+ 
+   render(
+     <QueryClientProvider client={client}>
++      <I18nProvider configClient={null} initialLocale={locale}>
+       <ModelMenuCloseContext.Provider value={closeMenu}>
+         <DropdownMenu open>
+           <DropdownMenuContent>
+@@ -307,6 +309,7 @@ function renderMenu(current: Partial<ModelMenuController['current']> = {}) {
+           </DropdownMenuContent>
+         </DropdownMenu>
+       </ModelMenuCloseContext.Provider>
++      </I18nProvider>
+     </QueryClientProvider>
+   )
+ 
+@@ -825,3 +828,22 @@ describe('the catalog renders per-model pricing', () => {
+     expect(screen.queryByText('free')).toBeNull()
+   })
+ })
++
++
++it('Chinese official provider captions remain searchable without changing the selected route', async () => {
++  const provider = Object.freeze({ slug: 'openai-codex', name: 'ChatGPT or Codex Subscription', models: ['gpt-5.5'], authenticated: true })
++  const custom = Object.freeze({ slug: 'custom:lab', name: 'ChatGPT or Codex Subscription', models: ['lab-model'], authenticated: true })
++  getGlobalModelOptions.mockResolvedValue({ providers: [provider, custom] })
++  const select = renderMenu({}, 'zh')
++  await screen.findByText('ChatGPT 或 Codex 订阅')
++  expect(screen.getByText('ChatGPT or Codex Subscription')).toBeTruthy()
++  const input = screen.getByRole('textbox')
++  fireEvent.change(input, { target: { value: 'ChatGPT' } })
++  expect(screen.getAllByRole('menuitem').some(item => item.textContent?.includes('ChatGPT 或 Codex 订阅'))).toBe(true)
++  fireEvent.change(input, { target: { value: '订阅' } })
++  expect(screen.queryByText('ChatGPT or Codex Subscription')).toBeNull()
++  fireEvent.click((await screen.findByText(/5\.5/)).closest('[role="menuitem"]')!)
++  await waitFor(() => expect(select).toHaveBeenCalledWith('gpt-5.5', 'openai-codex'))
++  expect(provider.name).toBe('ChatGPT or Codex Subscription')
++  expect(custom.slug).toBe('custom:lab')
++})
+diff --git a/apps/desktop/src/app/shell/model-catalog-menu.tsx b/apps/desktop/src/app/shell/model-catalog-menu.tsx
+index 3ee4ec96..b9e7beb3 100644
+--- a/apps/desktop/src/app/shell/model-catalog-menu.tsx
++++ b/apps/desktop/src/app/shell/model-catalog-menu.tsx
+@@ -38,7 +38,7 @@ import { useI18n } from '@/i18n'
+ import { triggerHaptic } from '@/lib/haptics'
+ import { isSubmitEnter } from '@/lib/ime'
+ import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
++import { displayModelName, modelDisplayParts, providerDisplayName } from '@/lib/model-status-label'
+ import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
+ import { reasoningEffortLabel } from '@/lib/reasoning-effort'
+ import { foldIncludes, normalize } from '@/lib/text'
+@@ -245,7 +245,7 @@ export function ModelCatalogMenu({
+   request,
+   sessionId = null
+ }: ModelCatalogMenuProps): ReactElement {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const copy = t.shell.modelMenu
+   const copyPicker = t.modelPicker
+   const closeMenu = useContext(ModelMenuCloseContext)
+@@ -379,9 +379,10 @@ export function ModelCatalogMenu({
+         search,
+         { model: current.model, provider: current.provider },
+         shownKeys,
+-        q ? null : favoriteSet
++        q ? null : favoriteSet,
++        locale
+       ),
+-    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet]
++    [pickerProviders, search, current.model, current.provider, shownKeys, q, favoriteSet, locale]
+   )
+ 
+   // Presets are searchable rows like everything else — an unfiltered preset
+@@ -764,7 +765,7 @@ export function ModelCatalogMenu({
+               {favoriteRows.map(({ family, provider }, index) => (
+                 <Fragment key={`${provider.slug}:${family.id}`}>
+                   {favoritesSpanProviders && favoriteRows[index - 1]?.provider.slug !== provider.slug ? (
+-                    <DropdownMenuLabel className={favoriteProviderLabel}>{provider.name}</DropdownMenuLabel>
++                    <DropdownMenuLabel className={favoriteProviderLabel}>{providerDisplayName(provider.slug, locale, provider.name)}</DropdownMenuLabel>
+                   ) : null}
+                   <ModelFamilyRow
+                     controller={controller}
+@@ -804,7 +805,7 @@ export function ModelCatalogMenu({
+                   textValue=""
+                 >
+                   <span className="truncate">
+-                    <HighlightMatches foldSeparators query={search} text={group.provider.name} />
++                    <HighlightMatches foldSeparators query={search} text={providerDisplayName(group.provider.slug, locale, group.provider.name)} />
+                   </span>
+                   <DisclosureCaret
+                     className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/label:opacity-100"
+@@ -899,7 +900,7 @@ export function ModelCatalogMenu({
+             >
+               <span className="min-w-0 flex-1 truncate">
+                 {customSlug}
+-                <span className="text-(--ui-text-tertiary)"> {provider.name}</span>
++                <span className="text-(--ui-text-tertiary)"> {providerDisplayName(provider.slug, locale, provider.name)}</span>
+               </span>
+             </DropdownMenuItem>
+           ))}
+@@ -1346,7 +1347,8 @@ function groupModels(
+   current: { model: string; provider: string },
+   visible: Set<string> | null,
+   /** Favorites to leave out (they paint in their own section); null lists every row. */
+-  favorites: ReadonlySet<string> | null
++  favorites: ReadonlySet<string> | null,
++  locale: string = 'en'
+ ): ProviderGroup[] {
+   const q = normalize(search)
+   const groups: ProviderGroup[] = []
+@@ -1373,7 +1375,7 @@ function groupModels(
+ 
+     const matches = (family: ModelFamily) =>
+       foldIncludes(
+-        `${family.id} ${family.fastId ?? ''} ${provider.name} ${provider.slug} ${displayModelName(family.id)}`,
++        `${family.id} ${family.fastId ?? ''} ${providerDisplayName(provider.slug, locale, provider.name)} ${provider.slug} ${displayModelName(family.id)}`,
+         q
+       )
+ 
+diff --git a/apps/desktop/src/components/model-picker.test.tsx b/apps/desktop/src/components/model-picker.test.tsx
+index 2f2a2369..530139a6 100644
+--- a/apps/desktop/src/components/model-picker.test.tsx
++++ b/apps/desktop/src/components/model-picker.test.tsx
+@@ -76,10 +76,10 @@ function setRuntimeJobs(jobs: readonly LocalRuntimeJob[]): void {
+   client.setQueryData(localModelsKey(localModelsOwner(), 'jobs'), jobs)
+ }
+ 
+-function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>) {
++function renderPicker(ui?: Partial<Parameters<typeof ModelPickerDialog>[0]>, locale = 'en') {
+   const element: ReactElement = (
+     <QueryClientProvider client={client}>
+-      <I18nProvider>
++      <I18nProvider configClient={null} initialLocale={locale}>
+         <ModelPickerDialog
+           currentModel="Qwen3.6-27B-UD-Q4_K_XL"
+           currentProvider="llamacpp"
+@@ -495,3 +495,19 @@ describe('ModelPickerDialog search ranking', () => {
+     })
+   })
+ })
++
++
++it('Chinese official provider captions stay searchable in the dialog and submit raw identifiers', async () => {
++  const provider = Object.freeze({ slug: 'openai-codex', name: 'ChatGPT or Codex Subscription', models: ['gpt-5.5'], authenticated: true })
++  vi.mocked(requestModelOptions).mockResolvedValue({ providers: [provider] })
++  const onSelect = vi.fn()
++  renderPicker({ currentModel: '', currentProvider: '', onSelect }, 'zh')
++  await screen.findByText('ChatGPT 或 Codex 订阅')
++  const input = screen.getByRole('combobox')
++  fireEvent.change(input, { target: { value: '订阅' } })
++  expect(screen.getByText('ChatGPT 或 Codex 订阅')).toBeTruthy()
++  fireEvent.change(input, { target: { value: 'ChatGPT' } })
++  fireEvent.click((await screen.findByText(/5\.5/)).closest('[role="option"]')!)
++  await waitFor(() => expect(onSelect).toHaveBeenCalledWith({ model: 'gpt-5.5', provider: 'openai-codex' }))
++  expect(provider.name).toBe('ChatGPT or Codex Subscription')
++})
+diff --git a/apps/desktop/src/components/model-picker.tsx b/apps/desktop/src/components/model-picker.tsx
+index f6b9f1c5..4b6bd844 100644
+--- a/apps/desktop/src/components/model-picker.tsx
++++ b/apps/desktop/src/components/model-picker.tsx
+@@ -1,6 +1,5 @@
+ import type { ModelOptionProvider, ModelPricing, PlanUsage, PlanUsageGauge } from '@hermes/shared'
+-import {
+-  gaugeTitle,
++import { gaugeTitle,
+   hasTopTier,
+   PAYMENT_PAUSE_REASON,
+   planBlocks,
+@@ -15,7 +14,7 @@ import { type ReactElement, useMemo, useRef, useState } from 'react'
+ 
+ import { useI18n } from '@/i18n'
+ import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+-import { currentPickerSelection } from '@/lib/model-status-label'
++import { currentPickerSelection, providerDisplayName } from '@/lib/model-status-label'
+ import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
+ import { foldIncludes, normalize } from '@/lib/text'
+ import { formatPercentUsed, formatResetsIn } from '@/lib/usage-percent'
+@@ -271,7 +270,7 @@ function ModelResults({
+   offerCustom: boolean
+   search: string
+ }): ReactElement {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const copy = t.modelPicker
+ 
+   if (loading) {
+@@ -298,7 +297,7 @@ function ModelResults({
+   // pickers use, so one query orders identically on every surface. A query
+   // that names the provider itself keeps its whole curated list, in order.
+   const rankModels = (provider: ModelOptionProvider, models: readonly string[]) => {
+-    if (!q || foldIncludes(provider.name, q) || foldIncludes(provider.slug, q)) {
++    if (!q || foldIncludes(provider.name, q) || foldIncludes(providerDisplayName(provider.slug, locale, provider.name), q) || foldIncludes(provider.slug, q)) {
+       return [...models]
+     }
+ 
+@@ -477,7 +476,7 @@ function ModelResults({
+               value={`custom:${provider.slug}:${customSlug}`}
+             >
+               <span className="min-w-0 flex-1 truncate">{customSlug}</span>
+-              <span className="shrink-0 text-[0.66rem] text-muted-foreground">{provider.name}</span>
++              <span className="shrink-0 text-[0.66rem] text-muted-foreground">{providerDisplayName(provider.slug, locale, provider.name)}</span>
+             </CommandItem>
+           ))}
+         </CommandGroup>
+@@ -831,7 +830,7 @@ function LoadingResults() {
+ }
+ 
+ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const copy = t.modelPicker
+ 
+   // Two different facts wear the same badge: `free_tier` is a signed-in Nous
+@@ -857,7 +856,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
+ 
+   return (
+     <span className="flex min-w-0 items-center gap-2">
+-      <span className="truncate">{provider.name}</span>
++      <span className="truncate">{providerDisplayName(provider.slug, locale, provider.name)}</span>
+       <span className="font-mono text-xs font-normal normal-case tracking-normal text-muted-foreground">
+         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
+       </span>
+diff --git a/apps/desktop/src/components/model-visibility-dialog.tsx b/apps/desktop/src/components/model-visibility-dialog.tsx
+index 4fcec043..bfb3f021 100644
+--- a/apps/desktop/src/components/model-visibility-dialog.tsx
++++ b/apps/desktop/src/components/model-visibility-dialog.tsx
+@@ -15,7 +15,7 @@ import type { HermesGateway } from '@/hermes'
+ import { useI18n } from '@/i18n'
+ import { Plus, Search, X } from '@/lib/icons'
+ import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
++import { displayModelName, modelDisplayParts, providerDisplayName } from '@/lib/model-status-label'
+ import { foldIncludes, normalize } from '@/lib/text'
+ import { confirm } from '@/store/confirm'
+ import {
+@@ -76,7 +76,7 @@ export function ModelVisibilityDialog({
+   profile = 'default',
+   sessionId
+ }: ModelVisibilityDialogProps) {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const copy = t.modelVisibility
+   const [search, setSearch] = useState('')
+   const stored = useStore($visibleModels)
+@@ -127,7 +127,7 @@ export function ModelVisibilityDialog({
+   const q = normalize(search)
+ 
+   const matches = (provider: ModelOptionProvider, model: string) =>
+-    !q || foldIncludes(`${model} ${provider.name} ${provider.slug} ${displayModelName(model)}`, q)
++    !q || foldIncludes(`${model} ${providerDisplayName(provider.slug, locale, provider.name)} ${provider.slug} ${displayModelName(model)}`, q)
+ 
+   // Typing an id no provider lists offers to add it — same gesture as the
+   // pickers, minus the switch — and the new row lands visible. Only once the
+@@ -189,7 +189,7 @@ export function ModelVisibilityDialog({
+                       type="button"
+                     >
+                       <span className="min-w-0 truncate">
+-                        <HighlightMatches foldSeparators query={search} text={provider.name} />
++                        <HighlightMatches foldSeparators query={search} text={providerDisplayName(provider.slug, locale, provider.name)} />
+                       </span>
+                       <DisclosureCaret
+                         className="shrink-0 opacity-0 transition group-hover/label:opacity-100"
+@@ -259,7 +259,7 @@ export function ModelVisibilityDialog({
+                 >
+                   <span className="min-w-0 flex-1 truncate">
+                     {customSlug}
+-                    <span className="text-(--ui-text-tertiary)"> {provider.name}</span>
++                    <span className="text-(--ui-text-tertiary)"> {providerDisplayName(provider.slug, locale, provider.name)}</span>
+                   </span>
+                   <Plus className="size-3 shrink-0 text-(--ui-text-tertiary)" />
+                 </RowButton>
+diff --git a/apps/desktop/src/components/onboarding/flow.tsx b/apps/desktop/src/components/onboarding/flow.tsx
+index 91901f88..52250c3f 100644
+--- a/apps/desktop/src/components/onboarding/flow.tsx
++++ b/apps/desktop/src/components/onboarding/flow.tsx
+@@ -10,6 +10,7 @@ import { Loader } from '@/components/ui/loader'
+ import { getGlobalModelOptions, profileScopeKey } from '@/hermes'
+ import { useI18n } from '@/i18n'
+ import { ExternalLink, Loader2 } from '@/lib/icons'
++import { providerDisplayName } from '@/lib/model-status-label'
+ import { cn } from '@/lib/utils'
+ import {
+   cancelOnboardingFlow,
+@@ -40,8 +41,8 @@ export function FlowPanel({
+   leaving: boolean
+   onBegin: () => void
+ }) {
+-  const { t } = useI18n()
+-  const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider) : ''
++  const { locale, t } = useI18n()
++  const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider, locale) : ''
+ 
+   if (flow.status === 'starting') {
+     return <Status>{t.onboarding.startingSignIn(title)}</Status>
+@@ -246,7 +247,7 @@ function ConfirmingModelPanel({
+   onBegin: () => void
+   ctx: OnboardingContext
+ }) {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const scrambledModel = useScramble(flow.currentModel, leaving)
+   const scrambledBegin = useScramble(t.onboarding.startChatting, leaving)
+   // Local state controls whether the model picker dialog is open.
+@@ -272,7 +273,10 @@ function ConfirmingModelPanel({
+ 
+   return (
+     <div className="grid place-items-center gap-7 py-6 text-center">
+-      <DecodedLabel leaving={leaving} text={t.onboarding.connectedProvider(flow.label)} />
++      <DecodedLabel
++        leaving={leaving}
++        text={t.onboarding.connectedProvider(providerDisplayName(flow.providerSlug, locale, flow.label))}
++      />
+ 
+       {flow.signedIn ? <SignedInLines leaving={leaving} signedIn={flow.signedIn} /> : null}
+ 
+diff --git a/apps/desktop/src/components/onboarding/providers.tsx b/apps/desktop/src/components/onboarding/providers.tsx
+index 51b7e7eb..83f8c965 100644
+--- a/apps/desktop/src/components/onboarding/providers.tsx
++++ b/apps/desktop/src/components/onboarding/providers.tsx
+@@ -1,7 +1,7 @@
+ import { RowButton } from '@/components/ui/row-button'
+ import { useI18n } from '@/i18n'
+ import { Check, ChevronRight, Terminal } from '@/lib/icons'
+-import { PROVIDER_DISPLAY_NAMES } from '@/lib/model-status-label'
++import { PROVIDER_DISPLAY_NAMES, providerDisplayName } from '@/lib/model-status-label'
+ import type { OAuthProvider } from '@/types/hermes'
+ 
+ // Titles live in PROVIDER_DISPLAY_NAMES (shared with the model pill); this is
+@@ -19,7 +19,14 @@ const PROVIDER_ORDER: Record<string, number> = {
+ 
+ const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
+ 
+-export const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY_NAMES[p.id] ?? p.name
++// Other locales retain the OAuth directory's existing canonical titles.
++// Chinese replaces only stock labels, leaving any other supplied name intact.
++export const providerTitle = (p: OAuthProvider, locale: string = 'en') =>
++  providerDisplayName(
++    p.id,
++    locale,
++    locale === 'zh' || !Object.hasOwn(PROVIDER_DISPLAY_NAMES, p.id) ? p.name : undefined
++  )
+ const orderOf = (p: OAuthProvider) => PROVIDER_ORDER[p.id] ?? 99
+ 
+ export const sortProviders = (providers: OAuthProvider[]) =>
+@@ -32,7 +39,7 @@ export function FeaturedProviderRow({
+   onSelect: (provider: OAuthProvider) => void
+   provider: OAuthProvider
+ }) {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const freeTier = provider.status?.free_tier === true
+   const loggedIn = provider.status?.logged_in && !freeTier
+ 
+@@ -47,7 +54,7 @@ export function FeaturedProviderRow({
+         <div className="flex items-center gap-2">
+           <img alt="" className="size-5 shrink-0 rounded" src={assetPath('apple-touch-icon.png')} />
+           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
+-            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider)}
++            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider, locale)}
+           </span>
+           {freeTier ? (
+             <FreeTierTag />
+@@ -136,7 +143,7 @@ export function ProviderRow({
+   onSelect: (provider: OAuthProvider) => void
+   provider: OAuthProvider
+ }) {
+-  const { t } = useI18n()
++  const { locale, t } = useI18n()
+   const freeTier = provider.status?.free_tier === true
+   const loggedIn = provider.status?.logged_in && !freeTier
+   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
+@@ -146,7 +153,7 @@ export function ProviderRow({
+       <div className="min-w-0">
+         <div className="flex items-center gap-2">
+           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
+-            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider)}
++            {freeTier ? t.freeTier.providerRowTitle : providerTitle(provider, locale)}
+           </span>
+           {freeTier ? <FreeTierTag /> : loggedIn ? <ConnectedTag /> : null}
+         </div>
+diff --git a/apps/desktop/src/i18n/zh.ts b/apps/desktop/src/i18n/zh.ts
+index f1a91d51..c2714e61 100644
+--- a/apps/desktop/src/i18n/zh.ts
++++ b/apps/desktop/src/i18n/zh.ts
+@@ -679,6 +679,7 @@ const zhBaseOverrides = {
+     },
+     notifications: zhNotifications,
+     sections: {
++      browser: '浏览器',
+       model: '模型',
+       chat: '对话',
+       appearance: '外观',
+diff --git a/apps/desktop/src/lib/model-status-label.ts b/apps/desktop/src/lib/model-status-label.ts
+index 14b4fea2..545551df 100644
+--- a/apps/desktop/src/lib/model-status-label.ts
++++ b/apps/desktop/src/lib/model-status-label.ts
+@@ -46,10 +46,32 @@ export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+   'xai-oauth': 'xAI Grok'
+ }
+ 
+-export function providerDisplayName(provider: string): string {
++const CHINESE_PROVIDER_LABELS: Readonly<Record<string, { names: readonly string[]; label: string }>> = {
++  anthropic: { names: ['Anthropic Account'], label: 'Anthropic 账号' },
++  'claude-code': {
++    names: ['Anthropic OAuth: Required Extra Usage Credits to Use Subscription'],
++    label: 'Anthropic OAuth：使用订阅需要额外用量额度'
++  },
++  'openai-codex': {
++    names: ['ChatGPT or Codex Subscription', 'ChatGPT or Codex subscription'],
++    label: 'ChatGPT 或 Codex 订阅'
++  }
++}
++
++/** Localize only the official label belonging to this route. Supplied names
++ * may identify a custom endpoint or the direct API, so they stay unchanged
++ * unless both the route and its complete official label match. */
++export function providerDisplayName(provider: string, locale: string = 'en', displayName?: string): string {
+   const normalized = provider.trim().toLowerCase()
+ 
+-  return PROVIDER_DISPLAY_NAMES[normalized] ?? provider.trim()
++  const canonical = Object.hasOwn(PROVIDER_DISPLAY_NAMES, normalized)
++    ? PROVIDER_DISPLAY_NAMES[normalized]
++    : provider.trim()
++
++  const name = displayName ?? canonical
++  const chinese = Object.hasOwn(CHINESE_PROVIDER_LABELS, normalized) ? CHINESE_PROVIDER_LABELS[normalized] : undefined
++
++  return locale === 'zh' && chinese?.names.includes(name) ? chinese.label : name
+ }
+ 
+ /** Strip provider prefix and normalize for display. */
+diff --git a/apps/desktop/src/lib/provider-labels-chinese.test.ts b/apps/desktop/src/lib/provider-labels-chinese.test.ts
+new file mode 100644
+index 00000000..3b9a039a
+--- /dev/null
++++ b/apps/desktop/src/lib/provider-labels-chinese.test.ts
+@@ -0,0 +1,144 @@
++import { cleanup, fireEvent, render, screen } from '@testing-library/react'
++import { createElement } from 'react'
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++import { FlowPanel } from '@/components/onboarding/flow'
++import { ProviderRow, providerTitle } from '@/components/onboarding/providers'
++import { I18nProvider, useI18n } from '@/i18n'
++import { makeOAuthProvider } from '@/test/oauth-provider'
++
++import { providerDisplayName } from './model-status-label'
++
++afterEach(cleanup)
++
++const OFFICIAL_LABELS = [
++  ['openai-codex', 'ChatGPT or Codex Subscription', 'ChatGPT 或 Codex 订阅'],
++  ['openai-codex', 'ChatGPT or Codex subscription', 'ChatGPT 或 Codex 订阅'],
++  ['anthropic', 'Anthropic Account', 'Anthropic 账号'],
++  [
++    'claude-code',
++    'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
++    'Anthropic OAuth：使用订阅需要额外用量额度'
++  ]
++] as const
++
++describe('Chinese provider labels', () => {
++  it.each(OFFICIAL_LABELS)('localizes the official %s label without changing other locales', (id, name, chinese) => {
++    expect(providerDisplayName(id, 'zh', name)).toBe(chinese)
++    expect(providerDisplayName(id, 'en', name)).toBe(name)
++    expect(providerDisplayName(id, 'fr', name)).toBe(name)
++    expect(providerDisplayName(id, 'zh-hant', name)).toBe(name)
++  })
++
++  it('keeps the existing ID mapping when no display name is supplied', () => {
++    expect(providerDisplayName('openai-codex')).toBe('ChatGPT or Codex Subscription')
++    expect(providerDisplayName(' ANTHROPIC ')).toBe('Anthropic Account')
++    expect(providerDisplayName('openai-codex', 'zh')).toBe('ChatGPT 或 Codex 订阅')
++    expect(providerDisplayName('claude-code', 'zh')).toBe('Anthropic OAuth：使用订阅需要额外用量额度')
++    expect(providerDisplayName('custom:lab', 'zh')).toBe('custom:lab')
++    expect(providerDisplayName('constructor', 'zh')).toBe('constructor')
++    expect(providerDisplayName('__proto__', 'zh')).toBe('__proto__')
++    expect(providerDisplayName('nous', 'zh')).toBe('Nous Portal')
++  })
++
++  it('requires both the canonical route and its complete official label', () => {
++    for (const [id, name] of OFFICIAL_LABELS) {
++      expect(providerDisplayName('custom:lab', 'zh', name)).toBe(name)
++      expect(providerDisplayName('another-provider', 'zh', name)).toBe(name)
++      expect(providerDisplayName(id, 'zh', `${name} · work`)).toBe(`${name} · work`)
++      expect(providerDisplayName(id, 'zh', ` ${name} `)).toBe(` ${name} `)
++    }
++
++    expect(providerDisplayName('anthropic', 'zh', 'ChatGPT or Codex Subscription')).toBe(
++      'ChatGPT or Codex Subscription'
++    )
++    expect(providerDisplayName('anthropic', 'zh', 'Anthropic')).toBe('Anthropic')
++    expect(providerDisplayName('anthropic', 'zh', 'anthropic')).toBe('anthropic')
++    expect(providerDisplayName('openai-codex', 'zh', 'My ChatGPT account')).toBe('My ChatGPT account')
++    expect(providerDisplayName('anthropic', 'en', 'Anthropic')).toBe('Anthropic')
++    expect(providerDisplayName('anthropic', 'en', 'My work account')).toBe('My work account')
++  })
++
++  it('retains the OAuth directory canonical English titles while protecting explicit custom names', () => {
++    const provider = makeOAuthProvider('anthropic', 'Anthropic Claude')
++
++    expect(providerTitle(provider)).toBe('Anthropic Account')
++    expect(providerTitle(provider, 'en')).toBe('Anthropic Account')
++    expect(providerTitle(provider, 'de')).toBe('Anthropic Account')
++    expect(providerTitle(provider, 'zh')).toBe('Anthropic Claude')
++    expect(providerDisplayName(provider.id, 'en', provider.name)).toBe('Anthropic Claude')
++    expect(providerTitle(makeOAuthProvider('custom:lab', 'My own provider'), 'en')).toBe('My own provider')
++    expect(providerTitle(makeOAuthProvider('constructor', 'My own provider'), 'en')).toBe('My own provider')
++  })
++
++  it('passes the original OAuth DTO to the sign-in action from a Chinese provider row', () => {
++    const provider = Object.freeze(makeOAuthProvider('anthropic', 'Anthropic Account'))
++    const onSelect = vi.fn()
++
++    render(
++      createElement(I18nProvider, {
++        children: createElement(ProviderRow, { onSelect, provider }),
++        configClient: null,
++        initialLocale: 'zh'
++      })
++    )
++
++    fireEvent.click(screen.getByRole('button', { name: /Anthropic 账号/ }))
++
++    expect(onSelect).toHaveBeenCalledExactlyOnceWith(provider)
++    expect(onSelect.mock.calls[0][0]).toBe(provider)
++    expect(provider.id).toBe('anthropic')
++    expect(provider.name).toBe('Anthropic Account')
++  })
++
++  it('updates the provider row immediately when the display language changes', () => {
++    const provider = Object.freeze(makeOAuthProvider('openai-codex', 'ChatGPT or Codex Subscription'))
++    const onSelect = vi.fn()
++
++    function LanguageToggle() {
++      const { setLocale } = useI18n()
++
++      return createElement('button', { onClick: () => void setLocale('en'), type: 'button' }, 'English')
++    }
++
++    render(
++      createElement(I18nProvider, {
++        children: [
++          createElement(LanguageToggle, { key: 'language' }),
++          createElement(ProviderRow, { key: 'provider', onSelect, provider })
++        ],
++        configClient: null,
++        initialLocale: 'zh'
++      })
++    )
++
++    expect(screen.getByRole('button', { name: /ChatGPT 或 Codex 订阅/ })).toBeTruthy()
++    fireEvent.click(screen.getByRole('button', { name: 'English' }))
++    fireEvent.click(screen.getByRole('button', { name: /ChatGPT or Codex Subscription/ }))
++
++    expect(screen.queryByText('ChatGPT 或 Codex 订阅')).toBeNull()
++    expect(onSelect.mock.calls[0][0]).toBe(provider)
++    expect(provider.name).toBe('ChatGPT or Codex Subscription')
++  })
++
++  it('uses the selected display language in the sign-in progress without changing its provider', () => {
++    const provider = Object.freeze(makeOAuthProvider('anthropic', 'Anthropic Account'))
++
++    render(
++      createElement(I18nProvider, {
++        children: createElement(FlowPanel, {
++          ctx: { requestGateway: async () => undefined as never },
++          flow: { status: 'starting', provider },
++          leaving: false,
++          onBegin: vi.fn()
++        }),
++        configClient: null,
++        initialLocale: 'zh'
++      })
++    )
++
++    expect(screen.getByText(/Anthropic 账号/)).toBeTruthy()
++    expect(provider.name).toBe('Anthropic Account')
++    expect(provider.cli_command).toBe('hermes login anthropic')
++  })
++})
+diff --git a/apps/desktop/src/store/onboarding.ts b/apps/desktop/src/store/onboarding.ts
+index 83595d66..7afaa0f4 100644
+--- a/apps/desktop/src/store/onboarding.ts
++++ b/apps/desktop/src/store/onboarding.ts
+@@ -16,7 +16,9 @@ import {
+   validateProviderCredential
+ } from '@/hermes'
+ import { translateNow } from '@/i18n'
++import { getRuntimeI18nLocale } from '@/i18n/runtime'
+ import { restOfLongPollGap } from '@/lib/long-poll'
++import { providerDisplayName } from '@/lib/model-status-label'
+ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+ import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
+ import {
+@@ -212,7 +214,7 @@ function captureContext(ctx: OnboardingContext): OnboardingContext & { scope: On
+ function signInDidNotFinish(provider: OAuthProvider, raw: unknown): { message: string; detail?: string } {
+   const detail = raw instanceof Error ? errMessage(raw) : typeof raw === 'string' ? raw.trim() : ''
+ 
+-  return { message: translateNow('onboarding.signInDidNotFinish', provider.name), detail: detail || undefined }
++  return { message: translateNow('onboarding.signInDidNotFinish', providerDisplayName(provider.id, getRuntimeI18nLocale(), provider.name)), detail: detail || undefined }
+ }
+ 
+ const patch = (update: Partial<DesktopOnboardingState>) =>
