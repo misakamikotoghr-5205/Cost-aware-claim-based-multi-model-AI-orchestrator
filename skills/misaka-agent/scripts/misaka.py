@@ -324,4 +324,6 @@ def main(argv=None):
         return 2
 
 
-if __name__=="__main__":raise SystemExit(main())
+if __name__=="__main__":
+    sys.stdout.reconfigure(encoding='utf-8')
+    raise SystemExit(main())

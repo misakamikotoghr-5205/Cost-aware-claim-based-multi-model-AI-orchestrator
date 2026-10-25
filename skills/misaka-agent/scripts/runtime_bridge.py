@@ -76,6 +76,7 @@ def request(payload):
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding='utf-8')
     try:
         raw = sys.stdin.buffer.read(131073)
         if len(raw) > 131072:
