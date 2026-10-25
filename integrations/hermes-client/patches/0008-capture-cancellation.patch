@@ -1,0 +1,252 @@
+diff --git a/apps/desktop/electron/region-capture-controller.test.ts b/apps/desktop/electron/region-capture-controller.test.ts
+index 9985e02b..7d0e1042 100644
+--- a/apps/desktop/electron/region-capture-controller.test.ts
++++ b/apps/desktop/electron/region-capture-controller.test.ts
+@@ -1,6 +1,10 @@
+-import { describe, expect, it, vi } from 'vitest'
++import { getEventListeners } from 'node:events'
+ 
+-import { createRegionCaptureController } from './region-capture-controller'
++import { afterEach, describe, expect, it, vi } from 'vitest'
++
++import { createRegionCaptureController, type RegionCaptureSource } from './region-capture-controller'
++
++afterEach(() => vi.useRealTimers())
+ 
+ function setup() {
+   const image = {
+@@ -10,8 +14,8 @@ function setup() {
+   }
+ 
+   const listSources = vi.fn(async () => [{ id: 'screen:7:0', name: 'Screen 2' }])
+-  const chooseSource = vi.fn(async () => 'screen:7:0' as string | null)
+-  const captureSource = vi.fn(async () => image)
++  const chooseSource = vi.fn(async (_sources: RegionCaptureSource[], _owner: number, _signal: AbortSignal) => 'screen:7:0' as string | null)
++  const captureSource = vi.fn(async (_id: string, _owner: number, _signal: AbortSignal) => image)
+   const clock = { now: 1000 }
+   const capture = createRegionCaptureController({ listSources, chooseSource, captureSource, now: () => clock.now })
+ 
+@@ -24,7 +28,8 @@ describe('Local screen acquisition', () => {
+     expect(listSources).not.toHaveBeenCalled()
+     const result = await capture.capture(7)
+     expect(chooseSource).toHaveBeenCalledWith([{ id: 'screen:7:0', name: 'Screen 2' }], 7, expect.any(AbortSignal))
+-    expect(captureSource).toHaveBeenCalledExactlyOnceWith('screen:7:0', 7)
++    expect(captureSource).toHaveBeenCalledExactlyOnceWith('screen:7:0', 7, expect.any(AbortSignal))
++    expect(getEventListeners(captureSource.mock.calls[0][2], 'abort')).toHaveLength(0)
+     expect(result).toEqual({
+       status: 'ok',
+       imageDataUrl: 'data:image/png;base64,iVBORw==',
+@@ -134,4 +139,66 @@ describe('Local screen acquisition', () => {
+     expect(result.status).toBe('denied')
+     expect(JSON.stringify(result)).not.toContain('credentials')
+   })
++
++  for (const invalidation of ['cancel', 'expire'] as const) {
++    it.each(['listSources', 'chooseSource', 'captureSource', 'selectRegion'] as const)(
++      `returns promptly on ${invalidation} while %s never settles, and observes its late rejection`, async stage => {
++        vi.useFakeTimers()
++        const { listSources, chooseSource, captureSource } = setup()
++        const selectRegion = vi.fn(async () => ({ status: 'preview' } as const))
++        const operations = { listSources, chooseSource, captureSource, selectRegion }
++        let rejectLate!: (error: Error) => void
++        const blocked = new Promise<never>((_resolve, reject) => { rejectLate = reject })
++        operations[stage].mockImplementationOnce(() => blocked)
++        const capture = createRegionCaptureController({ ...operations, expiresAfterMs: 1000 })
++        const pending = capture.capture(7)
++        let result: unknown
++        pending.then(value => { result = value })
++        await vi.waitFor(() => expect(operations[stage]).toHaveBeenCalled(), { interval: 1, timeout: 100 })
++        const signal = captureSource.mock.calls[0]?.[2] || chooseSource.mock.calls[0]?.[2]
++
++        if (invalidation === 'cancel') {
++          capture.cancel(7)
++        } else {
++          await vi.advanceTimersByTimeAsync(1000)
++        }
++
++        await vi.waitFor(() => expect(result).toEqual({ status: 'cancelled' }), { interval: 1, timeout: 50 })
++        expect(await pending).toEqual({ status: 'cancelled' })
++
++        if (signal) {
++          expect(signal.aborted).toBe(true)
++          expect(getEventListeners(signal, 'abort')).toHaveLength(0)
++        }
++
++        // Retry is allowed even though the original native operation still
++        // has not completed. Its eventual rejection must be handled harmlessly.
++        expect((await capture.capture(8)).status).toBe('ok')
++        rejectLate(new Error('late native failure'))
++        await Promise.resolve(); await Promise.resolve()
++      }
++    )
++  }
++
++  it('a cancelled request cannot release a newer capture started before its finally runs', async () => {
++    const { capture, chooseSource, captureSource } = setup()
++    let finishFirst!: (id: string) => void
++    let finishSecond!: (id: string) => void
++    chooseSource.mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))
++      .mockImplementationOnce(() => new Promise(resolve => { finishSecond = resolve }))
++    const first = capture.capture(7)
++    await vi.waitFor(() => expect(chooseSource).toHaveBeenCalledTimes(1))
++    capture.cancel(7)
++    const second = capture.capture(8)
++    expect(await first).toEqual({ status: 'cancelled' })
++    await vi.waitFor(() => expect(chooseSource).toHaveBeenCalledTimes(2))
++    expect(await capture.capture(9)).toMatchObject({ status: 'cancelled', message: 'A screen selection is already open.' })
++    finishFirst('screen:7:0')
++    await Promise.resolve(); await Promise.resolve()
++    expect(captureSource).not.toHaveBeenCalled()
++    expect(await capture.capture(9)).toMatchObject({ status: 'cancelled', message: 'A screen selection is already open.' })
++    finishSecond('screen:7:0')
++    expect((await second).status).toBe('ok')
++    expect(captureSource).toHaveBeenCalledExactlyOnceWith('screen:7:0', 8, expect.any(AbortSignal))
++  })
+ })
+diff --git a/apps/desktop/electron/region-capture-controller.ts b/apps/desktop/electron/region-capture-controller.ts
+index 15d94893..a8c624ee 100644
+--- a/apps/desktop/electron/region-capture-controller.ts
++++ b/apps/desktop/electron/region-capture-controller.ts
+@@ -15,7 +15,7 @@ export interface RegionCaptureImage {
+ interface RegionCaptureDependencies {
+   listSources(): Promise<RegionCaptureSource[]>
+   chooseSource(sources: RegionCaptureSource[], owner: number, signal: AbortSignal): Promise<string | null>
+-  captureSource(id: string, owner: number): Promise<RegionCaptureImage | null>
++  captureSource(id: string, owner: number, signal: AbortSignal): Promise<RegionCaptureImage | null>
+   selectRegion?(
+     image: RegionCaptureImage,
+     source: RegionCaptureSource,
+@@ -26,37 +26,83 @@ interface RegionCaptureDependencies {
+   expiresAfterMs?: number
+ }
+ 
++/** Native capture promises may never settle; cancellation must still release the caller. */
++function runCaptureStage<T>(signal: AbortSignal, stage: () => Promise<T>): Promise<T> {
++  return new Promise<T>((resolve, reject) => {
++    let settled = false
++
++    const settle = (deliver: () => void) => {
++      if (settled) {
++        return
++      }
++
++      settled = true
++      signal.removeEventListener('abort', onAbort)
++      deliver()
++    }
++
++    const onAbort = () => settle(() => reject(new Error('Region capture cancelled')))
++
++    if (signal.aborted) {
++      onAbort()
++
++      return
++    }
++
++    signal.addEventListener('abort', onAbort, { once: true })
++
++    try {
++      // Attach both handlers even when abort occurs inside stage(): a late
++      // rejection is observed, but can never deliver a cancelled screen image.
++      Promise.resolve(stage()).then(
++        value => settle(() => resolve(value)),
++        error => settle(() => reject(error))
++      )
++    } catch (error) {
++      settle(() => reject(error))
++    }
++  })
++}
++
+ /** One owner, one modal consent and one image. No autonomous capture loop. */
+ export function createRegionCaptureController(deps: RegionCaptureDependencies) {
+   const now = deps.now ?? Date.now
+   const expiresAfterMs = deps.expiresAfterMs ?? 90_000
+   let generation = 0
+   let active: { owner: number; generation: number; expires: number; abort: AbortController } | null = null
+-  let busy = false
+ 
+   return {
+     cancel(owner?: number) {
+       if (active && (owner === undefined || active.owner === owner)) {
+-        active.abort.abort()
++        const token = active
+         generation += 1
+         active = null
++        token.abort.abort()
+       }
+     },
+     async capture(owner: number): Promise<RegionCaptureResult> {
+-      if (busy) {
++      if (active) {
+         return { status: 'cancelled', message: 'A screen selection is already open.' }
+       }
+ 
+-      busy = true
+       const token = { owner, generation: ++generation, expires: now() + expiresAfterMs, abort: new AbortController() }
+-      const timer = setTimeout(() => token.abort.abort(), expiresAfterMs)
++
++      const timer = setTimeout(() => {
++        if (active === token) {
++          generation += 1
++          active = null
++        }
++
++        token.abort.abort()
++      }, expiresAfterMs)
++
+       active = token
+ 
+       const current = () =>
+         active === token && generation === token.generation && now() < token.expires && !token.abort.signal.aborted
+ 
+       try {
+-        const sources = await deps.listSources()
++        const sources = await runCaptureStage(token.abort.signal, () => deps.listSources())
+ 
+         if (!current()) {
+           return { status: 'cancelled' }
+@@ -66,7 +112,7 @@ export function createRegionCaptureController(deps: RegionCaptureDependencies) {
+           return { status: 'unsupported', message: 'No selectable screen is available.' }
+         }
+ 
+-        const selected = await deps.chooseSource(sources, owner, token.abort.signal)
++        const selected = await runCaptureStage(token.abort.signal, () => deps.chooseSource(sources, owner, token.abort.signal))
+ 
+         if (!current() || selected === null) {
+           return { status: 'cancelled' }
+@@ -78,7 +124,7 @@ export function createRegionCaptureController(deps: RegionCaptureDependencies) {
+           return { status: 'cancelled', message: 'The selected screen is no longer available.' }
+         }
+ 
+-        let image = await deps.captureSource(source.id, owner)
++        let image = await runCaptureStage(token.abort.signal, () => deps.captureSource(source.id, owner, token.abort.signal))
+ 
+         if (!current()) {
+           return { status: 'cancelled' }
+@@ -103,11 +149,14 @@ export function createRegionCaptureController(deps: RegionCaptureDependencies) {
+         let isCropped = false
+ 
+         if (deps.selectRegion) {
+-          const region = await deps.selectRegion(image, source, owner, {
++          const selectRegion = deps.selectRegion
++          const sourceImage = image
++
++          const region = await runCaptureStage(token.abort.signal, () => selectRegion(sourceImage, source, owner, {
+             isCurrent: current,
+             expiresAt: token.expires,
+             signal: token.abort.signal
+-          })
++          }))
+ 
+           if (!current() || region.status === 'cancelled') {
+             return { status: 'cancelled' }
+@@ -154,8 +203,6 @@ export function createRegionCaptureController(deps: RegionCaptureDependencies) {
+         if (active === token) {
+           active = null
+         }
+-
+-        busy = false
+       }
+     }
+   }
