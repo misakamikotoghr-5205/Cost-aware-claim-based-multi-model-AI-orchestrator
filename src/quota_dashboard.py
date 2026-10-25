@@ -241,6 +241,22 @@ def native_accounts():
             add("openai-codex", tokens["access_token"], _codex_base_url(), auth_type="oauth")
         except Exception:
             pass
+    # A configured provider can have a local API-key binding without a pool
+    # row (and without being the foreground model). Keep those accounts visible
+    # as unknown when no official quota reader exists. The native status API
+    # returns metadata only; no key is copied into this unsupported-provider row.
+    present = {item["provider"] for item in results}
+    from hermes_cli.auth import get_api_key_provider_status
+    for provider, profile in PROVIDER_REGISTRY.items():
+        if provider in present or getattr(profile, "auth_type", "") != "api_key":
+            continue
+        try:
+            metadata = get_api_key_provider_status(provider)
+            if metadata.get("configured") is True:
+                add(provider, "", str(metadata.get("base_url") or ""),
+                    label=str(metadata.get("name") or provider), identity="configured-provider", auth_type="api_key")
+        except Exception:
+            continue
     provider = current_provider
     if provider and provider not in {item["provider"] for item in results}:
         add(provider, "", "", identity="configured-provider")
