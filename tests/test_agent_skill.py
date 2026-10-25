@@ -137,3 +137,12 @@ def test_intent_operations_accept_metadata_only_and_keep_revision_fence():
     with pytest.raises(ValueError):cli.optional_operation('intent-create',{'screenshot':'binary'},None)
     with pytest.raises(ValueError):cli.optional_operation('intent-refine',{'revision':1},'../../escape')
     with pytest.raises(ValueError):cli.optional_operation('judge-test',{'base_url':'https://remote.example'},None)
+
+
+def test_transport_and_lease_credentials_never_leave_the_runtime_bridge():
+    raw={'task':{'task_id':'stable','lease_token':'private-node-lease','result':{'verified':True,
+        'usage':{'prompt_tokens':128},'headers':{'Authorization':'Bearer private'}}},'ticket':'private-ticket'}
+    public=bridge.public_result(raw)
+    assert 'private' not in json.dumps(public) and public['task']['task_id']=='stable'
+    assert public['task']['result']['verified'] and public['task']['result']['usage']['prompt_tokens']==128
+    assert raw['task']['lease_token']=='private-node-lease'  # Does not mutate the node's record.

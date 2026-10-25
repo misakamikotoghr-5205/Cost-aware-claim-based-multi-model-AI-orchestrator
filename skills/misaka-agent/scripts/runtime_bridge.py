@@ -16,6 +16,17 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 MAX_BYTES = 2 * 1024 * 1024
+PRIVATE_FIELDS={'token','ticket','api_key','apikey','authorization','cookie','cookies','password',
+                'credentials','headers','access_token','refresh_token','lease_token'}
+
+
+def public_result(value):
+    """Lease/auth credentials stay in the native runtime, not the host agent."""
+    if isinstance(value,dict):
+        return {key:public_result(item) for key,item in value.items()
+                if key.lower() not in PRIVATE_FIELDS and not key.lower().endswith(('_token','_password','_api_key'))}
+    if isinstance(value,list):return [public_result(item) for item in value]
+    return value
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -72,7 +83,7 @@ def request(payload):
                 "http_status": exc.code}
     if len(raw) > MAX_BYTES:
         raise ValueError("response_too_large")
-    return {"ok": True, "result": json.loads(raw)}
+    return {"ok": True, "result": public_result(json.loads(raw))}
 
 
 if __name__ == "__main__":

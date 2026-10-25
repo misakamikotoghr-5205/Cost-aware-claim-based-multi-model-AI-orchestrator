@@ -29,6 +29,8 @@ native APIs. It supplies no browser `Origin` header, matching the native private
 HTTP boundary. Tickets never leave that runtime child's memory via output or
 files. No API key or OAuth credential is placed in this package or transmitted
 to a fleet cloud. Only the native backend can resolve configured credentials.
+Task records are projected inside that runtime child before output, removing
+lease tokens and authentication fields while retaining task IDs and receipts.
 
 The `POST /agent/fleet` route delegates to the same function used by the native
 fleet model tool: explicit service enablement, owner identity, permitted node,
