@@ -232,6 +232,7 @@ it('compact UI pins owner scope and hands confirmed draft plus opted-in crop to 
     regionCapture: { capture: async () => ({ ...captured, region_already_cropped: true }) } }
   render(createElement(PointerPane, { ctx }))
   expect(screen.getByRole('textbox', { name: '关键词' })).toBeTruthy()
+  expect(screen.queryByLabelText('附上所选区域图片')).toBeNull()
   fireEvent.change(screen.getByRole('textbox', { name: '关键词' }), { target: { value: '润色' } })
   fireEvent.click(screen.getByText('开始圈选')); await screen.findByAltText('已圈选区域预览')
   expect((screen.getByRole('textbox', { name: '关键词' }) as HTMLInputElement).value).toBe('润色')
@@ -256,6 +257,7 @@ it('compact handoff failure preserves the draft and never reports success', asyn
   fireEvent.click(screen.getByText('生成多个候选')); fireEvent.click(await screen.findByText('润色 — 更清楚'))
   fireEvent.click(screen.getByLabelText('附上所选区域图片')); fireEvent.click(screen.getByText('确认加入聊天草稿'))
   expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringContaining('原聊天已改变'))
+  fireEvent.click(screen.getByText('预览操作草稿'))
   expect(screen.getByRole('textbox', { name: '聊天草稿预览' })).toHaveProperty('value', '请润色')
   expect(screen.queryByText('草稿和选区图片已就绪。返回聊天检查后发送。')).toBeNull()
 })
