@@ -45,7 +45,7 @@ it('reads cached records locally and keeps unknown quota distinct from a real ze
   const known = await screen.findByRole('article', { name: '工作账号 额度' })
   expect(within(known).getByRole('progressbar', { name: '5 小时窗口已用比例' }).getAttribute('value')).toBe('60')
   expect(within(known).getByText('剩余 40%')).toBeTruthy()
-  expect(within(known).getByText(/来源：codex-rate-limit-snapshot/)).toBeTruthy()
+  expect(within(known).getByText(/来源：Codex 官方用量快照/)).toBeTruthy()
   expect(within(known).getByText(/下次重置：/).textContent).not.toContain('未提供')
   const missing = screen.getByRole('article', { name: '未登录账号 额度' })
   expect(within(missing).getByText('未登录此服务，无法读取真实额度。')).toBeTruthy()
@@ -167,9 +167,55 @@ it('imports only an explicitly selected JSON with the user supplied collection t
 it('gives a missing Dashboard entry the restart guidance and registers a real clickable native route', async () => {
   const api = vi.fn(async () => { throw new Error('404: Not Found') }); (window as any).hermesDesktop = { api }
   render(createElement(DashboardPage, { ctx: context() }))
-  expect((await screen.findByRole('alert')).textContent).toContain('在原生插件页启用 Agent，重启对应本机代理，再重新连接')
+  expect((await screen.findByRole('alert')).textContent).toContain('在原生插件页启用智能体功能，重启对应本机代理，再重新连接')
   const register = vi.fn()
   plugin.register({ register, registerSettingsPage: vi.fn() } as any)
-  expect(register.mock.calls.some(([entry]) => entry.area === 'nav' && entry.data.label === 'Dashboard' && entry.data.path === '/dashboard')).toBe(true)
+  expect(register.mock.calls.some(([entry]) => entry.area === 'nav' && entry.data.label === '额度总览' && entry.data.path === '/dashboard')).toBe(true)
   expect(register.mock.calls.some(([entry]) => entry.area === 'routes' && entry.data.path === '/dashboard' && typeof entry.render === 'function')).toBe(true)
+})
+
+it('explains unsupported Copilot usage and an unconfigured cloud in Chinese without inventing zero quota', async () => {
+  const data = snapshot([{ ...account('copilot'), provider: 'copilot', state: 'unknown', windows: [],
+    unknown_reason: '此服务商暂不支持自动读取额度，可导入已核实的数据。' }])
+  data.cloud.unknown_reason = 'No cloud quota server is configured.'
+  const original = JSON.stringify(data)
+  ;(window as any).hermesDesktop = { api: vi.fn(async () => data) }
+  render(createElement(DashboardPage, { ctx: context() }))
+  const card = await screen.findByRole('article', { name: 'GitHub Copilot 额度' })
+  expect(within(card).getByText(/当前尚不支持读取其用量接口，额度未获取/)).toBeTruthy()
+  expect(within(card).queryByRole('progressbar')).toBeNull()
+  expect(within(card).queryByText(/剩余 0/)).toBeNull()
+  expect(screen.getByText(/尚未配置云端服务/)).toBeTruthy()
+  expect(screen.queryByText('No cloud quota server is configured.')).toBeNull()
+  expect(screen.queryByText(/来源：fleet-ledger/)).toBeNull()
+  expect(JSON.stringify(data)).toBe(original)
+})
+
+it('keeps actual currency balances separate from subscription percentages and translates their metadata', async () => {
+  const data = snapshot([{ ...account('订阅账号'), provider: 'anthropic', source: 'official-usage-api',
+    windows: [{ ...account().windows[0], label: 'Session', scope: 'account' }] },
+  { ...account('API 账号'), provider: 'openrouter', source: 'official-usage-api',
+    windows: [{ ...account().windows[0], label: 'API 余额', unit: 'USD', capacity: 10, used: 10, remaining: 0, scope: 'api_key' }] }])
+  const original = JSON.stringify(data)
+  ;(window as any).hermesDesktop = { api: vi.fn(async () => data) }
+  render(createElement(DashboardPage, { ctx: context() }))
+  const subscription = await screen.findByRole('article', { name: '订阅账号 额度' })
+  expect(within(subscription).getByText('剩余 40%')).toBeTruthy()
+  expect(within(subscription).getByText(/订阅窗口百分比/)).toBeTruthy()
+  expect(within(subscription).getByText('范围：账号内共享')).toBeTruthy()
+  const currency = screen.getByRole('article', { name: 'API 账号 额度' })
+  expect(within(currency).getByText('剩余 0 美元')).toBeTruthy()
+  expect(within(currency).queryByText(/订阅窗口百分比/)).toBeNull()
+  expect(within(currency).getByText('范围：API 密钥限额')).toBeTruthy()
+  expect(within(currency).getByRole('progressbar').getAttribute('value')).toBe('100')
+  expect(JSON.stringify(data)).toBe(original)
+})
+
+it('does not display arbitrary native transport error text or credential-shaped URLs', async () => {
+  ;(window as any).hermesDesktop = { api: vi.fn(async () => { throw new Error('503: https://example.invalid/?api_key=synthetic-private-value') }) }
+  render(createElement(DashboardPage, { ctx: context() }))
+  const alert = await screen.findByRole('alert')
+  expect(alert.textContent).toContain('请检查本机连接、账号状态或导入文件后重试')
+  expect(alert.textContent).not.toContain('example.invalid')
+  expect(alert.textContent).not.toContain('synthetic-private-value')
 })

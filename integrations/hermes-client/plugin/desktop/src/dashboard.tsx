@@ -1,10 +1,11 @@
 import { Button, ErrorState, Input, Loader, host, type PluginContext } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 import { localApi } from './local-api'
+import { operationError, platformLabel, providerLabel, quotaReason, scopeLabel, sourceLabel, windowLabel } from './presentation'
 
 interface QuotaWindow {
   id: string; label: string; unit: string; capacity: number | null; used: number | null; remaining: number | null
-  reset_at: number | null; scope: string; state: string; held?: number | null; available?: number | null
+  reset_at: number | null; scope: string; state: string; held?: number | null; available?: number | null; unknown_reason?: string | null
 }
 interface QuotaAccount {
   id: string; provider: string; label: string; state: string; source: string; observed_at: number | null
@@ -27,28 +28,36 @@ function timestamp(value: number | null | undefined) {
 }
 function quantity(value: number, unit: string) {
   const number = value.toLocaleString('zh-CN', { maximumFractionDigits: 4 })
-  if (['usd', 'USD', 'dollars'].includes(unit)) return `$${number} USD`
-  if (['cny', 'CNY'].includes(unit)) return `¥${number} CNY`
+  if (['usd', 'USD', 'dollars'].includes(unit)) return `${number} 美元`
+  if (['cny', 'CNY'].includes(unit)) return `${number} 元（人民币）`
   if (['percent', '%', 'percentage'].includes(unit)) return `${number}%`
-  const units: Record<string, string> = { requests: '次', tokens: 'Token', credits: '积分' }
+  const units: Record<string, string> = { requests: '次', tokens: '词元', credits: '积分', fraction: '份额' }
   return `${number} ${units[unit] || unit}`.trim()
 }
 const states: Record<string, string> = { ready: '已读取', stale: '记录已过期', expired: '窗口已结束', partial: '部分已读取', blocked: '暂不可调度' }
 const stateLabel = (state: string) => states[state] || '未获取'
 
 function AccountCard({ account }: { account: QuotaAccount }) {
-  return <article className="misaka-quota-card" aria-label={`${account.label || account.provider} 额度`}>
+  const name = !account.label || account.label === account.provider ? providerLabel(account.provider) : account.label
+  return <article className="misaka-quota-card" aria-label={`${name} 额度`}>
     <div className="misaka-account-head"><span className="misaka-provider-icon" aria-hidden="true">{account.provider.slice(0, 2).toUpperCase()}</span>
-      <div className="misaka-account-name"><h3>{account.label || account.provider}</h3><p>{account.provider}</p></div>
+      <div className="misaka-account-name"><h3>{name}</h3><p>{providerLabel(account.provider)}</p></div>
       <span className="misaka-badge" data-state={account.state}>{stateLabel(account.state)}</span></div>
-    {account.unknown_reason && <p className="misaka-reason">{account.unknown_reason}</p>}
-    {!account.windows.length && <p>尚无可读取的额度窗口。</p>}
+    {account.unknown_reason && <p className="misaka-reason">{quotaReason(account.unknown_reason, account.provider)}</p>}
+    {!account.windows.length && <p>尚未获取用量数据，未将未知额度显示为零。</p>}
     {account.windows.map(window => {
       const ready = ['ready', 'partial'].includes(account.state) && window.state === 'ready'
+      const label = windowLabel(window.label)
+      const percent = ['percent', '%', 'percentage'].includes(window.unit)
+      const monetary = ['usd', 'cny', 'dollars'].includes(window.unit?.toLowerCase())
+      const subscription = ['openai-codex', 'codex', 'anthropic'].includes(account.provider.toLowerCase())
+      const kind = account.source === 'fleet-ledger' ? '云端工作配额' : monetary ? '货币余额与支出（保留原始币种）' : percent ? subscription ? '订阅窗口百分比' : '用量窗口百分比' : '数量配额（保留原始单位）'
       const hasRatio = ready && finite(window.used) && finite(window.capacity) && window.capacity > 0
-      return <section className="misaka-window" key={window.id} aria-label={window.label}>
-        <div className="misaka-window-title"><span>{window.label}</span><strong>{ready && finite(window.remaining) ? `剩余 ${quantity(window.remaining, window.unit)}` : '—'}</strong></div>
-        {hasRatio && <progress max={100} value={Math.min(100, window.used! / window.capacity! * 100)} aria-label={`${window.label}已用比例`} />}
+      return <section className="misaka-window" key={window.id} aria-label={label}>
+        <div className="misaka-window-title"><span>{label}</span><strong>{ready && finite(window.remaining) ? `剩余 ${quantity(window.remaining, window.unit)}` : '—'}</strong></div>
+        <small>{kind} · {stateLabel(window.state)}</small>
+        {window.unknown_reason && <small>{quotaReason(window.unknown_reason, account.provider)}</small>}
+        {hasRatio && <progress max={100} value={Math.min(100, window.used! / window.capacity! * 100)} aria-label={`${label}已用比例`} />}
         {ready && finite(window.used) && finite(window.capacity)
           ? <small>已用 {quantity(window.used, window.unit)} / 上限 {quantity(window.capacity, window.unit)}</small>
           : <small>{ready ? '服务未提供完整用量或上限，无法计算使用比例。' : '当前额度未确认，未计算使用比例。'}</small>}
@@ -57,10 +66,10 @@ function AccountCard({ account }: { account: QuotaAccount }) {
           {ready && finite(window.available) && <small>可调度 {quantity(window.available, window.unit)}</small>}
           <small>下次重置：{timestamp(window.reset_at)}</small>
         </div>
-        {window.scope && <small>范围：{window.scope}</small>}
+        {window.scope && <small>范围：{scopeLabel(window.scope)}</small>}
       </section>
     })}
-    <footer className="misaka-source">来源：{account.source || '未提供'}<br />采集时间：{timestamp(account.observed_at)}
+    <footer className="misaka-source">来源：{sourceLabel(account.source || '')}<br />最近采集：{timestamp(account.observed_at)}
       {finite(account.expires_at) && <><br />记录有效至：{timestamp(account.expires_at)}</>}</footer>
   </article>
 }
@@ -84,14 +93,14 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
     return ctx.setTimeout(() => {
       api<DashboardSnapshot>('/quota/dashboard').then(value => {
         if (mounted.current && current === generation.current) setSnapshot(value)
-      }).catch(failure => { if (mounted.current && current === generation.current) setError(String(failure)) })
+      }).catch(failure => { if (mounted.current && current === generation.current) setError(operationError(failure)) })
     }, 1000)
   }, [snapshot, localProfile, ctx])
 
   async function perform(operation: () => Promise<DashboardSnapshot>) {
     const current = ++generation.current; setBusy(true); setError('')
     try { const value = await operation(); if (mounted.current && current === generation.current) setSnapshot(value) }
-    catch (failure) { if (mounted.current && current === generation.current) setError(String(failure)) }
+    catch (failure) { if (mounted.current && current === generation.current) setError(operationError(failure)) }
     finally { if (mounted.current && current === generation.current) setBusy(false) }
   }
   async function readCache() { await perform(() => api<DashboardSnapshot>('/quota/dashboard')) }
@@ -105,7 +114,7 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
       // Older clients cannot safely infer the latter from the active chat.
       if (typeof host.openLocalProviderSettings !== 'function') throw new Error('当前客户端无法绑定原生账号设置的本机配置，请升级 MISAKA AGENT 客户端后重试。')
       await host.openLocalProviderSettings({ connectionId: 'local', profile: localProfile, signal: controller.signal })
-    } catch (failure) { if (mounted.current && current === generation.current) setError(String(failure)) }
+    } catch (failure) { if (mounted.current && current === generation.current) setError(operationError(failure)) }
     finally { if (settingsRequest.current === controller) settingsRequest.current = null }
   }
   async function importSnapshot() {
@@ -114,7 +123,7 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
     if ((format !== 'normalized-v1' || date !== undefined) && (!finite(date) || date <= 0)) { setError('请填写快照实际采集时间，导入时间不能代替采集时间。'); return }
     let path: string | null | undefined
     try { path = await ctx.os.pickOpenPath({ title: '导入用量快照', filters: [{ name: 'JSON 快照', extensions: ['json'] }] }) }
-    catch (failure) { if (mounted.current && current === generation.current) setError(String(failure)); return }
+    catch (failure) { if (mounted.current && current === generation.current) setError(operationError(failure)); return }
     if (!path || !mounted.current || current !== generation.current) return
     await perform(() => api<DashboardSnapshot>('/quota/import', { method: 'POST', body: {
       format, path, ...(date === undefined ? {} : { observed_at: date }), ...(accountLabel.trim() ? { account_label: accountLabel.trim() } : {})
@@ -125,16 +134,16 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
   const waiting = busy || snapshot?.refreshing === true
   return <main className="misaka-dashboard" aria-label="MISAKA AGENT 额度总览"><style>{CSS}</style><div className="misaka-dashboard-inner">
     <header className="misaka-head"><div className="misaka-heading"><div className="misaka-brand"><span className="misaka-brand-dot" />MISAKA AGENT</div>
-      <h1>额度总览</h1><p>查看账号用量、共享配额与本机节点状态。</p></div>
+      <h1>额度总览</h1><p>查看真实账号用量、云端工作配额与本机节点状态。</p></div>
       <div className="misaka-actions"><Button variant="secondary" onClick={openAccounts}>账号与模型设置</Button>
         <Button disabled={waiting} onClick={refresh}>{snapshot?.refreshing ? '正在刷新用量' : '读取最新额度'}</Button></div></header>
-    <div className="misaka-profile"><label>本机配置（profile）<Input aria-label="额度本机配置" value={profileInput} onChange={event => setProfileInput(event.target.value)} /></label>
+    <div className="misaka-profile"><label>本机配置<Input aria-label="额度本机配置" value={profileInput} onChange={event => setProfileInput(event.target.value)} /></label>
       <Button size="sm" variant="secondary" disabled={!profileInput.trim()} onClick={() => {
         try { const target = profileInput.trim(); localApi(target); ctx.storage.set('local-profile', target)
           if (target === localProfile) { readCache(); return }
           generation.current++; settingsRequest.current?.abort(); setLocalProfile(target); setSnapshot(null); setError('') }
-        catch (failure) { setError(String(failure)) }
-      }}>连接此本机配置</Button><p>当前数据来自本机 {localProfile}。聊天连接切换不会改变这里的账号范围。</p></div>
+        catch (failure) { setError(operationError(failure)) }
+      }}>连接此本机配置</Button><p>当前数据来自本机配置“{localProfile === 'default' ? '默认' : localProfile}”。聊天连接切换不会改变这里的账号范围。</p></div>
     {waiting && <Loader label={snapshot?.refreshing ? '正在读取实际用量，已缓存数据仍可查看' : '正在读取本机额度记录'} />}
     {error && <ErrorState title="额度读取未完成" description={error}><Button size="sm" variant="secondary" onClick={readCache}>重新读取记录</Button></ErrorState>}
     <section className="misaka-overview" aria-label="账号用量概况">
@@ -142,19 +151,20 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
       <div className="misaka-stat"><span>待确认的账号</span><strong>{snapshot ? accounts.length - ready : '—'}</strong></div>
       <div className="misaka-stat"><span>最近一次刷新</span><time>{timestamp(snapshot?.refreshed_at)}</time></div>
     </section>
-    <section className="misaka-section" aria-label="本机账号额度"><div className="misaka-head"><h2>账号用量</h2><p>不同计量单位分别展示，不合并为虚构余额。</p></div>
+    <p>请先在“账号与模型设置”中登录对应服务或配置 API，再读取用量。登录可用不代表服务商提供额度接口；未配置、暂不支持或读取失败时均显示“未获取”。</p>
+    <section className="misaka-section" aria-label="本机账号额度"><div className="misaka-head"><h2>账号用量</h2><p>订阅窗口用百分比，API 余额用原始货币，云端工作配额另列。</p></div>
       {accounts.length ? <div className="misaka-account-grid">{accounts.map(account => <AccountCard key={account.id} account={account} />)}</div>
         : <div className="misaka-empty"><h3>尚无可显示的账号用量</h3><p>在此本机配置的原生账号设置中登录，然后点击“读取最新额度”。服务未公开用量时会显示原因。</p><Button size="sm" variant="secondary" onClick={openAccounts}>打开原生账号设置</Button></div>}
     </section>
-    {snapshot && <><section className="misaka-section" aria-label="共享云端额度"><div className="misaka-head"><h2>共享云端额度</h2>
+    {snapshot && <><section className="misaka-section" aria-label="云端工作配额"><div className="misaka-head"><h2>云端工作配额</h2>
       <span className="misaka-badge" data-state={snapshot.cloud.state}>{stateLabel(snapshot.cloud.state)}</span></div>
-      <p>私网调度账本的工作配额，独立于服务商账号余额。来源：{snapshot.cloud.source || '未提供'}</p>
-      {snapshot.cloud.unknown_reason && <p>{snapshot.cloud.unknown_reason}</p>}
+      <p>来自云端调度台账，按配置记录任务工作配额，独立于服务商订阅和 API 账户余额。来源：{sourceLabel(snapshot.cloud.source || '')}</p>
+      {snapshot.cloud.unknown_reason && <p>{quotaReason(snapshot.cloud.unknown_reason)}</p>}
       {!!snapshot.cloud.accounts.length && <div className="misaka-account-grid">{snapshot.cloud.accounts.map(account => <AccountCard key={account.id} account={account} />)}</div>}
       {!snapshot.cloud.configured && <div><Button size="sm" variant="secondary" onClick={() => host.navigate('/orchestrator')}>配置云端与本地协同</Button></div>}
     </section><section className="misaka-section" aria-label="本机节点状态"><h2>本机节点</h2><div className="misaka-node">
-      <div><span>执行位置</span><strong>{snapshot.node.execution_location === 'this_backend_host' ? '当前本机代理' : snapshot.node.execution_location || '未提供'}</strong></div>
-      <div><span>操作系统</span><strong>{snapshot.node.platform || '未提供'}</strong></div>
+      <div><span>执行位置</span><strong>{snapshot.node.execution_location === 'this_backend_host' ? '当前本机代理' : '执行位置未确认'}</strong></div>
+      <div><span>操作系统</span><strong>{platformLabel(snapshot.node.platform)}</strong></div>
       <div><span>任务接收</span><strong>{snapshot.node.running ? '运行中' : snapshot.node.status === 'unknown' ? '未确认' : '已停止'}</strong></div>
     </div></section></>}
     <details className="misaka-import"><summary>导入已有用量快照</summary><div className="misaka-import-fields">
@@ -165,6 +175,6 @@ export function DashboardPage({ ctx }: { ctx: PluginContext }) {
       <label>账号显示名称（可选）<Input aria-label="快照账号名称" value={accountLabel} onChange={event => setAccountLabel(event.target.value)} /></label>
       <Button size="sm" variant="secondary" disabled={waiting || (format !== 'normalized-v1' && !observedAt)} onClick={importSnapshot}>选择 JSON 并导入</Button></div>
       <p>仅导入你选择的本机文件。原始服务商快照必须填写实际采集时间，导入不会延长记录有效期。</p></details>
-    {snapshot?.notes.map((note, index) => <p key={index}>{note}</p>)}
+    {snapshot?.notes.map((note, index) => <p key={index}>{quotaReason(note)}</p>)}
   </div></main>
 }
