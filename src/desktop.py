@@ -417,7 +417,7 @@ def legacy_main(argv=None):
 
 
 def main(argv=None):
-    """Launch the complete native Hermes client; retain the old form explicitly."""
+    """Launch MISAKA AGENT on the complete native Hermes runtime."""
     import argparse
     import os
     import subprocess
@@ -426,9 +426,9 @@ def main(argv=None):
     if "--legacy" in arguments:
         arguments.remove("--legacy")
         return legacy_main(arguments)
-    parser = argparse.ArgumentParser(description="Native Hermes-based orchestrator desktop client")
+    parser = argparse.ArgumentParser(description="MISAKA AGENT desktop client")
     parser.add_argument("--hermes-home", type=Path,
-                        default=Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))))
+                        default=Path(os.environ.get("HERMES_HOME", str(Path.home() / ".misaka-agent"))))
     parser.add_argument("--upstream", type=Path, help="Use a checkout of the locked native client source")
     parser.add_argument("--skip-deps", action="store_true", help="Use already installed upstream dependencies")
     parser.add_argument("--prepare-only", action="store_true", help="Build the native client without opening a window")

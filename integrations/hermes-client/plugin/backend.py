@@ -22,7 +22,7 @@ import time
 from urllib.parse import urlsplit
 
 PLUGIN_ID = "orchestrator-core"
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 EXTENSIONS = ("local-judge", "free-models")
 ALL_EXTENSIONS = (*EXTENSIONS, "smart-pointer")
 FORBIDDEN = {"api_key", "apikey", "password", "token", "access_token", "refresh_token",

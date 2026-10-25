@@ -1,5 +1,5 @@
 name: local-judge
-version: 0.1.1
+version: 0.2.0
 description: Optional independently installed local-judge extension for orchestrator-core.
 author: Orchestrator contributors
 requires_plugins:
